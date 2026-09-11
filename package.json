@@ -1,6 +1,6 @@
 {
   "name": "wa2simplex",
-  "version": "0.1.0-alpha.1",
+  "version": "0.2.0-alpha.1",
   "private": true,
   "description": "Public-alpha privacy-minded bridge between WhatsApp Cloud API and SimpleX Chat",
   "type": "module",
@@ -9,10 +9,10 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "test": "node --test",
-    "check": "node --check src/index.js && node --check src/simplex.js && node --check src/whatsapp.js && node --check src/router.js && node --check src/config.js"
+    "check": "node --check src/index.js && node --check src/simplex.js && node --check src/whatsapp.js && node --check src/router.js && node --check src/config.js && node --check src/storage.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

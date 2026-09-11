@@ -4,16 +4,16 @@ import { createLogger } from './logger.js';
 import { SimplexClient } from './simplex.js';
 import { WhatsAppClient, extractWhatsAppMessages, verifyMetaSignature } from './whatsapp.js';
 import { BridgeRouter } from './router.js';
+import { BridgeStore } from './storage.js';
 
 const config = loadConfig();
 const logger = createLogger(config.logLevel);
 const app = express();
+const store = new BridgeStore(config.dbPath);
 
 app.use(express.json({
   limit: '2mb',
-  verify: (req, _res, buf) => {
-    req.rawBody = Buffer.from(buf);
-  }
+  verify: (req, _res, buf) => { req.rawBody = Buffer.from(buf); }
 }));
 
 const simplex = new SimplexClient({ url: config.simplex.wsUrl, logger });
@@ -21,8 +21,10 @@ const whatsapp = new WhatsAppClient({ ...config.whatsapp, logger });
 const router = new BridgeRouter({
   simplex,
   whatsapp,
-  simplexTarget: config.simplex.target,
-  restrictToTarget: config.simplex.restrictToTarget,
+  store,
+  controlTarget: config.simplex.controlTarget,
+  ownerContactId: config.simplex.ownerContactId,
+  groupPrefix: config.simplex.groupPrefix,
   markWhatsAppRead: config.whatsapp.markRead,
   logger
 });
@@ -35,7 +37,9 @@ app.get('/health', (_req, res) => {
   res.json({
     ok: true,
     service: 'WA2SimpleX',
+    version: '0.2.0-alpha.1',
     simplexConnected: simplex.ws?.readyState === 1,
+    contacts: store.stats(),
     now: new Date().toISOString()
   });
 });
@@ -44,7 +48,6 @@ app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
-
   if (mode === 'subscribe' && token === config.whatsapp.verifyToken) {
     logger.info('WhatsApp webhook verified');
     return res.status(200).send(challenge);
@@ -58,9 +61,7 @@ app.post('/webhook', (req, res) => {
     logger.warn('Rejected WhatsApp webhook with invalid signature');
     return res.sendStatus(401);
   }
-
   res.sendStatus(200);
-
   const messages = extractWhatsAppMessages(req.body);
   Promise.allSettled(messages.map((message) => router.handleWhatsApp(message))).then((results) => {
     for (const result of results) {
@@ -74,15 +75,16 @@ app.use((error, _req, res, _next) => {
   if (!res.headersSent) res.status(400).json({ ok: false });
 });
 
-const server = app.listen(config.port, '0.0.0.0', () => {
-  logger.info('WA2SimpleX HTTP server listening', { port: config.port });
-});
+const server = app.listen(config.port, '0.0.0.0', () => logger.info('WA2SimpleX HTTP server listening', { port: config.port }));
 
-simplex.start().catch((error) => logger.error('Initial SimpleX connection failed', { error: error.message }));
+simplex.start()
+  .then(() => router.initialize())
+  .catch((error) => logger.error('Initial SimpleX connection failed', { error: error.message }));
 
 function shutdown(signal) {
   logger.info('Shutting down', { signal });
   simplex.stop();
+  store.close();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(1), 5000).unref();
 }

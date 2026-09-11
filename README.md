@@ -2,17 +2,17 @@
 
 # WA2SimpleX
 
-### Bridge WhatsApp messages into SimpleX Chat — and reply from SimpleX.
+### WhatsApp conversations in SimpleX — one chat per contact.
 
 [![Status](https://img.shields.io/badge/status-public%20alpha-orange)](https://github.com/0xRech/WA2SIMPLEX)
-[![Version](https://img.shields.io/badge/version-0.1.0--alpha.1-blue)](https://github.com/0xRech/WA2SIMPLEX)
+[![Version](https://img.shields.io/badge/version-0.2.0--alpha.1-blue)](https://github.com/0xRech/WA2SIMPLEX)
 [![CI](https://github.com/0xRech/WA2SIMPLEX/actions/workflows/ci.yml/badge.svg)](https://github.com/0xRech/WA2SIMPLEX/actions/workflows/ci.yml)
-[![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-22.13%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-**Self-hosted · official WhatsApp Cloud API · SimpleX CLI · no message-history database**
+**Self-hosted · official WhatsApp Cloud API · SimpleX CLI · persistent local routing · no message-history database**
 
-> **Public Alpha** — WA2SimpleX is experimental software. Expect breaking changes, incomplete media support and rough edges. Do not treat the current release as production-ready.
+> **Public Alpha** — experimental software. Expect breaking changes, incomplete media support and rough edges. Do not treat the current release as production-ready.
 
 </div>
 
@@ -20,187 +20,143 @@
 
 ## What is WA2SimpleX?
 
-WA2SimpleX is a small, self-hosted bridge between the **official WhatsApp Cloud API** and **SimpleX Chat**.
+WA2SimpleX is a self-hosted bridge between the **official WhatsApp Cloud API** and **SimpleX Chat**.
 
-Incoming WhatsApp messages are forwarded into a private SimpleX conversation. You can answer the forwarded message directly in SimpleX and WA2SimpleX routes that reply back to the correct WhatsApp contact.
-
-It intentionally avoids unofficial WhatsApp Web automation such as browser-session scraping.
+Starting with **v0.2**, WhatsApp conversations no longer need to share one bridge chat. WA2SimpleX creates a dedicated private SimpleX group for each WhatsApp contact and routes messages based on that group.
 
 ```text
-┌─────────────────┐       HTTPS webhook       ┌──────────────────┐
-│    WhatsApp     │ ────────────────────────► │                  │
-│  Cloud API      │                           │    WA2SimpleX     │
-│                 │ ◄──────────────────────── │                  │
-└─────────────────┘       Cloud API reply     └────────┬─────────┘
-                                                       │
-                                                localhost WebSocket
-                                                       │
-                                                       ▼
-                                              ┌──────────────────┐
-                                              │  SimpleX CLI     │
-                                              │   ↕ SimpleX      │
-                                              └──────────────────┘
+WhatsApp                         WA2SimpleX                         SimpleX
+
+Max ───────────────┐                                        ┌── WA · Max · 4567
+                   │        ┌─────────────────────┐         │
+Leonie ────────────┼───────►│ Contact Router      │─────────┼── WA · Leonie · 9012
+                   │        │                     │         │
+Kunde ─────────────┘        │ SQLite mappings     │         └── WA · Kunde · 1337
+                            │ Webhook verification│
+                            └─────────────────────┘
+                                      │
+                                      └────────────► WA2SimpleX Control
 ```
 
-## Why?
+You simply open the matching SimpleX chat and type. No phone number, route marker or reply command is normally required.
 
-The goal is simple: keep WhatsApp reachable while handling conversations from SimpleX.
+## v0.2 highlights
 
-WA2SimpleX is useful when you want to:
+- **One SimpleX chat per WhatsApp contact.**
+- Contact chats are created automatically on the first incoming WhatsApp message.
+- WA2SimpleX invites your configured SimpleX contact as an admin to each generated group.
+- Messages written in a mapped group are automatically sent to that WhatsApp contact.
+- Dedicated **WA2SimpleX Control** chat with `/status`, `/contacts`, `/new`, `/archive`, `/unarchive`, `/repair` and `/wa`.
+- Persistent SQLite mapping survives restarts.
+- Persistent WhatsApp webhook deduplication.
+- Mapping recovery from SimpleX group custom data when possible.
+- Incoming messages automatically reactivate archived mappings.
+- Local `/rename`, `/info`, `/archive` and `/help` commands in contact chats.
+- Legacy v0.1 quoted-message routing remains available as a fallback.
+- Meta `X-Hub-Signature-256` verification.
+- Optional automatic WhatsApp read receipts.
+- `/health` endpoint for monitoring.
 
-- receive WhatsApp messages inside SimpleX,
-- keep the bridge under your own control,
-- avoid running an unofficial WhatsApp Web bot,
-- reply from SimpleX without manually copying messages between apps,
-- experiment with interoperability between two very different messaging networks.
+## Important SimpleX behavior
 
-## Alpha feature set
+A generated contact chat is a **private SimpleX group** containing the WA2SimpleX bot profile and your SimpleX account.
 
-### Working now
+When WA2SimpleX sees a WhatsApp contact for the first time, SimpleX sends you a group invitation. **You must accept that invitation once for the new contact chat.** Until the group is joined, WA2SimpleX also mirrors incoming messages into the Control chat so the first messages are not missed.
 
-- ✅ WhatsApp Cloud API webhook receiver
-- ✅ Meta webhook verification
-- ✅ `X-Hub-Signature-256` verification for webhook POST requests
-- ✅ WhatsApp text → SimpleX forwarding
-- ✅ readable notices for common non-text WhatsApp message types
-- ✅ SimpleX reply/quote → correct WhatsApp recipient
-- ✅ manual fallback command: `/wa +491701234567 message`
-- ✅ protection against accidentally forwarding unrelated SimpleX messages
-- ✅ in-memory duplicate webhook protection
-- ✅ optional WhatsApp read receipts
-- ✅ automatic SimpleX WebSocket reconnect
-- ✅ `/health` endpoint for monitoring
-- ✅ masked phone numbers in application logs
-- ✅ no application-level message-history database
-- ✅ Dockerfile, systemd example and GitHub Actions tests
+After joining, normal conversation happens entirely inside the generated contact chat.
 
-### Not finished yet
+## Privacy model
 
-- 🚧 binary image/document/audio/video transfer to SimpleX
-- 🚧 SimpleX attachments → WhatsApp
-- 🚧 persistent webhook deduplication across restarts
-- 🚧 multi-user / multi-destination routing
-- 🚧 admin UI and bridge status dashboard
-
-## How replies work
-
-A WhatsApp message is forwarded into your configured SimpleX chat with a routing marker:
+WA2SimpleX is a bridge, not continuous end-to-end encryption across WhatsApp and SimpleX:
 
 ```text
-📲 WhatsApp · Max Mustermann
-Von: +491701234567
-⟦WA:491701234567⟧
-
-Hallo, bist du da?
-
-↩️ Antworte in SimpleX direkt auf diese Nachricht.
+WhatsApp E2EE / Cloud API
+          ↓
+     WA2SimpleX
+          ↓
+      SimpleX E2EE
 ```
 
-Reply to that message in SimpleX:
+The bridge process necessarily sees message plaintext while converting between the two networks.
 
-```text
-Ja, bin da 👍
-```
+WA2SimpleX itself does **not** maintain a message-history database. v0.2 stores only routing/operational metadata in SQLite:
 
-WA2SimpleX reads the routing information from the quoted bridge message and sends the reply to the corresponding WhatsApp number.
+- WhatsApp phone number
+- WhatsApp/display name
+- associated SimpleX group ID
+- ready/archive state
+- timestamps
+- processed WhatsApp message IDs for deduplication
 
-As a fallback, you can address a recipient manually:
-
-```text
-/wa +491701234567 Ja, bin da 👍
-```
-
-`/help` shows the available bridge commands inside SimpleX.
-
----
-
-# Quick start
+Message bodies are not written to the WA2SimpleX SQLite database.
 
 ## Requirements
 
-You need:
-
-- Linux VPS/server or another always-on host
-- Node.js **20+**
-- SimpleX Chat CLI
+- Linux VPS/server
+- **Node.js 22.13+**
+- SimpleX Chat CLI with WebSocket API
 - Meta app with WhatsApp Cloud API enabled
 - WhatsApp Business phone number / Phone Number ID
-- HTTPS endpoint reachable by Meta
-- reverse proxy such as Caddy, Nginx or Plesk
+- public HTTPS endpoint for Meta webhooks
 
-## 1. Run SimpleX CLI locally
+The SimpleX WebSocket must remain private/local.
 
-Install the current SimpleX Chat CLI and start its WebSocket API:
+## Quick start
+
+### 1. Start SimpleX CLI
+
+Install the current SimpleX CLI and start its local WebSocket API:
 
 ```bash
 simplex-chat -p 5225
 ```
 
-> **Do not expose port `5225` to the internet.** Keep the SimpleX WebSocket interface on localhost or another trusted private network.
+Do **not** expose port `5225` publicly.
 
-Connect the bridge's SimpleX profile to your own account and determine the numeric contact or group ID.
+Connect the bridge SimpleX profile to your personal SimpleX account and determine its contact ID, for example `@2`.
 
-Example contact:
-
-```dotenv
-SIMPLEX_TARGET=@2
-```
-
-Example private group:
-
-```dotenv
-SIMPLEX_TARGET=#5
-```
-
-## 2. Install WA2SimpleX
+### 2. Install WA2SimpleX
 
 ```bash
 git clone https://github.com/0xRech/WA2SIMPLEX.git
 cd WA2SIMPLEX
 npm install
 cp .env.example .env
+nano .env
+npm start
 ```
 
-Edit `.env`:
+Minimal configuration:
 
 ```dotenv
-PORT=3000
-
-WHATSAPP_VERIFY_TOKEN=choose-a-long-random-value
+WHATSAPP_VERIFY_TOKEN=a-long-random-value-you-choose
 WHATSAPP_ACCESS_TOKEN=your-meta-access-token
 WHATSAPP_PHONE_NUMBER_ID=your-phone-number-id
 WHATSAPP_APP_SECRET=your-meta-app-secret
 WHATSAPP_API_VERSION=v23.0
-WHATSAPP_MARK_READ=true
 
 SIMPLEX_WS_URL=ws://127.0.0.1:5225
-SIMPLEX_TARGET=@2
-SIMPLEX_RESTRICT_TO_TARGET=true
+SIMPLEX_CONTROL_TARGET=@2
+SIMPLEX_GROUP_PREFIX=WA
 
-LOG_LEVEL=info
+DB_PATH=./data/wa2simplex.db
 ```
 
-Then start the bridge:
+`SIMPLEX_CONTROL_TARGET` must currently be a direct SimpleX contact (`@<id>`), because that contact is invited into generated WhatsApp contact groups.
 
-```bash
-npm start
-```
+### 3. Configure Meta webhook
 
-Development mode:
-
-```bash
-npm run dev
-```
-
-## 3. Publish the webhook over HTTPS
-
-WA2SimpleX listens on port `3000` by default. Put that HTTP service behind your HTTPS reverse proxy.
-
-Example:
+Expose only the WA2SimpleX HTTP server through HTTPS, for example:
 
 ```text
 https://bridge.example.com/webhook
 ```
+
+Configure in the Meta app:
+
+- Callback URL: `https://bridge.example.com/webhook`
+- Verify token: value of `WHATSAPP_VERIFY_TOKEN`
+- Subscribe to the `messages` webhook field
 
 Health endpoint:
 
@@ -208,70 +164,61 @@ Health endpoint:
 https://bridge.example.com/health
 ```
 
-Do **not** publish the SimpleX WebSocket port.
+## Everyday use
 
-## 4. Configure the Meta webhook
-
-In your Meta app's WhatsApp webhook settings use:
+First message from a new WhatsApp contact:
 
 ```text
-Callback URL: https://bridge.example.com/webhook
-Verify token:  value of WHATSAPP_VERIFY_TOKEN
-Field:         messages
+WhatsApp: Max Mustermann
+        ↓
+WA2SimpleX creates:
+WA · Max Mustermann · 4567
 ```
 
-The initial GET challenge is validated with your verify token. Incoming POST requests are additionally checked using your Meta app secret and `X-Hub-Signature-256`.
-
----
-
-# Security model
-
-WA2SimpleX connects two independently encrypted messaging systems. That means it **cannot provide one continuous end-to-end encrypted session from a WhatsApp sender all the way to the SimpleX recipient**.
-
-The bridge necessarily sees plaintext while translating a message from one network into the other:
+Accept the SimpleX group invitation once. After that:
 
 ```text
-WhatsApp encrypted session
-          │
-          ▼
-     WA2SimpleX
-   plaintext boundary
-          │
-          ▼
-SimpleX encrypted session
+WA · Max Mustermann · 4567
+
+Max: Hallo, bist du da?
+You: Ja, bin da 👍
 ```
 
-For that reason the current design deliberately keeps the bridge small and minimizes retained data.
+Your plain SimpleX reply is routed back to Max on WhatsApp.
 
-Recommended deployment rules:
+## Control chat
 
-1. Never commit `.env`, access tokens or app secrets.
-2. Never expose the SimpleX WebSocket port publicly.
-3. Keep `SIMPLEX_RESTRICT_TO_TARGET=true` unless you understand the consequences.
-4. Terminate the WhatsApp webhook behind HTTPS.
-5. Keep Node.js, SimpleX CLI and the host OS patched.
-6. Restrict inbound firewall rules to required services only.
-7. Run the bridge under a dedicated unprivileged user where possible.
-8. Treat the bridge host as security-sensitive because it processes message plaintext in memory.
+Your configured direct chat (`SIMPLEX_CONTROL_TARGET`) acts as the WA2SimpleX Control channel.
 
-See [SECURITY.md](SECURITY.md) for vulnerability reporting guidance.
+```text
+/status
+/contacts
+/new +491701234567 Max
+/archive +491701234567
+/unarchive +491701234567
+/repair +491701234567
+/wa +491701234567 Hallo 👋
+/help
+```
 
-## Data retention
+`/new` creates a mapped SimpleX contact chat without immediately sending a WhatsApp message.
 
-WA2SimpleX currently:
+## Contact-chat commands
 
-- does not maintain an application-level message-history database,
-- does not maintain a phone-number/address-book database,
-- masks phone numbers in normal application logs,
-- stores webhook deduplication state only in memory.
+Inside a generated WhatsApp contact chat:
 
-Your operating system, reverse proxy, Meta services and SimpleX components can have their own logging or retention behavior. Review those separately for your deployment.
+```text
+/info
+/rename Max Arbeit
+/archive
+/help
+```
 
----
+Any message beginning with `/` is treated as a local WA2SimpleX command and is **not** forwarded to WhatsApp.
 
-# Running as a service
+## systemd example
 
-Example `/etc/systemd/system/wa2simplex.service`:
+Use a persistent state directory for SQLite:
 
 ```ini
 [Unit]
@@ -283,9 +230,11 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/opt/WA2SIMPLEX
 EnvironmentFile=/opt/WA2SIMPLEX/.env
+Environment=DB_PATH=/var/lib/wa2simplex/wa2simplex.db
 ExecStart=/usr/bin/node /opt/WA2SIMPLEX/src/index.js
 Restart=on-failure
 RestartSec=5
+StateDirectory=wa2simplex
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -295,88 +244,69 @@ ProtectHome=true
 WantedBy=multi-user.target
 ```
 
-Run the SimpleX CLI separately on the same host, ideally as its own restricted service/user.
+Run the SimpleX CLI as a separate service/user on the same host and keep its WebSocket bound to localhost.
 
 ## Docker
 
-A `Dockerfile` is included:
-
 ```bash
 docker build -t wa2simplex .
-docker run --rm --network host --env-file .env wa2simplex
+docker run --rm \
+  --network host \
+  --env-file .env \
+  -v wa2simplex-data:/app/data \
+  wa2simplex
 ```
 
-Host networking is the simplest current Linux setup when the SimpleX CLI WebSocket listens only on localhost. A future Docker Compose setup can isolate both services on a private container network instead.
+The volume preserves contact mappings and webhook deduplication across container restarts.
 
----
+## Security notes
 
-# Development
+1. Never commit `.env`, tokens or app secrets.
+2. Never expose SimpleX port `5225` publicly.
+3. Put `/webhook` behind HTTPS.
+4. Keep the VPS, Node.js and SimpleX CLI patched.
+5. Back up the SQLite routing DB if preserving contact mappings matters to you.
+6. Treat the VPS as a trusted endpoint: the bridge necessarily processes message plaintext.
+7. See [SECURITY.md](SECURITY.md) for vulnerability reporting.
+
+## Current limitations
+
+- Text is bidirectional.
+- WhatsApp images/documents/audio/video currently appear as readable notices/captions; binary media bridging is not implemented yet.
+- SimpleX attachments are not yet uploaded to WhatsApp.
+- A newly generated SimpleX contact group requires a one-time invitation acceptance.
+- Outbound WhatsApp messages remain subject to Meta/WhatsApp Business Platform conversation and template rules.
+- v0.2 is still alpha and has not been load-tested at large scale.
+
+## Roadmap
+
+- [x] WhatsApp → SimpleX text
+- [x] SimpleX → WhatsApp text
+- [x] One SimpleX chat per WhatsApp contact
+- [x] Persistent SQLite routing
+- [x] Control chat
+- [x] Persistent webhook deduplication
+- [ ] Bidirectional image transfer
+- [ ] Documents and files
+- [ ] Voice messages / audio
+- [ ] Video
+- [ ] Better delivery/read-state synchronization
+- [ ] Multi-number / multi-user routing
+
+## Development
 
 ```bash
-npm install
 npm run check
 npm test
+npm run dev
 ```
-
-The project uses Node's built-in test runner and includes tests for webhook signature verification, WhatsApp payload parsing and reply routing.
-
-## Project structure
-
-```text
-WA2SIMPLEX/
-├── .github/workflows/ci.yml
-├── src/
-│   ├── config.js
-│   ├── index.js
-│   ├── logger.js
-│   ├── router.js
-│   ├── simplex.js
-│   └── whatsapp.js
-├── test/
-├── .env.example
-├── Dockerfile
-├── LICENSE
-├── SECURITY.md
-└── package.json
-```
-
----
-
-# Roadmap
-
-The next useful milestones are:
-
-- **v0.2** — real media/file transfer in both directions
-- **v0.3** — persistent lightweight routing/deduplication state
-- **v0.4** — multiple WhatsApp conversations / SimpleX destinations
-- **later** — deployment wizard, metrics and optional administration UI
-
-The roadmap is directional, not a release promise. Alpha releases may change configuration and message formats without backward compatibility.
-
-## Contributing
-
-Issues, bug reports and ideas are welcome once the repository is public. Please avoid posting secrets, real access tokens, private phone numbers or private message contents in issues or logs.
-
-Security vulnerabilities should **not** be posted as public issues. See [SECURITY.md](SECURITY.md).
 
 ## Disclaimer
 
-WA2SimpleX is an independent open-source project. It is **not affiliated with, endorsed by, sponsored by or officially supported by Meta, WhatsApp or SimpleX Chat**.
+WA2SimpleX is an independent open-source project and is **not affiliated with, endorsed by, or sponsored by Meta, WhatsApp or SimpleX Chat**. WhatsApp and SimpleX are trademarks of their respective owners.
 
-WhatsApp is a trademark of its respective owner. SimpleX and SimpleX Chat are names/trademarks of their respective project/owners.
-
-Use of WhatsApp APIs is subject to Meta's applicable platform terms, policies and technical restrictions.
+Use of the WhatsApp Business Platform is subject to Meta's applicable terms and policies.
 
 ## License
 
-Released under the [MIT License](LICENSE).
-
----
-
-<div align="center">
-
-**WA2SimpleX · Public Alpha**
-
-Built to explore a small, self-hosted bridge between WhatsApp and SimpleX.
-
-</div>
+MIT — see [LICENSE](LICENSE).
