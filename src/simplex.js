@@ -16,7 +16,10 @@ export class SimplexClient extends EventEmitter {
     this.activeUserId = null;
   }
 
-  start() { this.stopped = false; return this.#connect(); }
+  start() {
+    this.stopped = false;
+    return this.#connect();
+  }
 
   stop() {
     this.stopped = true;
@@ -46,6 +49,7 @@ export class SimplexClient extends EventEmitter {
         this.pending.delete(corrId);
         reject(new Error(`SimpleX command timed out: ${cmd.split(' ')[0]}`));
       }, this.commandTimeoutMs);
+
       this.pending.set(corrId, { resolve, reject, timer });
       this.ws.send(JSON.stringify({ corrId, cmd }), (error) => {
         if (!error) return;
@@ -57,8 +61,22 @@ export class SimplexClient extends EventEmitter {
   }
 
   sendText(chatRef, text) {
-    const messages = [{ msgContent: { type: 'text', text: String(text) } }];
+    return this.sendMessages(chatRef, [{ msgContent: { type: 'text', text: String(text) } }]);
+  }
+
+  sendFile(chatRef, filePath, text = '') {
+    return this.sendMessages(chatRef, [{
+      fileSource: { filePath: String(filePath) },
+      msgContent: { type: 'file', text: String(text || '') }
+    }]);
+  }
+
+  sendMessages(chatRef, messages) {
     return this.sendCommand(`/_send ${chatRef} json ${JSON.stringify(messages)}`);
+  }
+
+  receiveFile(fileId, filePath) {
+    return this.sendCommand(`/freceive ${Number(fileId)} ${String(filePath)}`);
   }
 
   async getActiveUserId() {
@@ -115,6 +133,7 @@ export class SimplexClient extends EventEmitter {
       this.logger.info('Connecting to SimpleX CLI', { url: this.url });
       const ws = new WebSocket(this.url);
       this.ws = ws;
+
       ws.on('open', () => {
         this.reconnectAttempt = 0;
         this.activeUserId = null;
@@ -122,6 +141,7 @@ export class SimplexClient extends EventEmitter {
         this.emit('connected');
         resolve();
       });
+
       ws.on('message', (data) => this.#onMessage(data));
       ws.on('error', (error) => this.logger.warn('SimpleX WebSocket error', { error: error.message }));
       ws.on('close', () => {
@@ -138,8 +158,12 @@ export class SimplexClient extends EventEmitter {
 
   #onMessage(data) {
     let message;
-    try { message = JSON.parse(data.toString()); }
-    catch { this.logger.warn('Ignoring invalid JSON from SimpleX CLI'); return; }
+    try {
+      message = JSON.parse(data.toString());
+    } catch {
+      this.logger.warn('Ignoring invalid JSON from SimpleX CLI');
+      return;
+    }
 
     if (message.corrId && this.pending.has(message.corrId)) {
       const pending = this.pending.get(message.corrId);
@@ -147,15 +171,20 @@ export class SimplexClient extends EventEmitter {
       clearTimeout(pending.timer);
       if (message.resp?.type === 'chatCmdError') {
         pending.reject(new Error(`SimpleX command failed: ${JSON.stringify(message.resp.chatError ?? message.resp)}`));
-      } else pending.resolve(message.resp);
+      } else {
+        pending.resolve(message.resp);
+      }
       return;
     }
+
     if (message.resp) this.emit('event', message.resp);
   }
 
   #scheduleReconnect() {
     this.reconnectAttempt += 1;
     const delay = Math.min(30000, 500 * 2 ** Math.min(this.reconnectAttempt, 6));
-    setTimeout(() => { if (!this.stopped) this.#connect().catch(() => {}); }, delay);
+    setTimeout(() => {
+      if (!this.stopped) this.#connect().catch(() => {});
+    }, delay);
   }
 }
