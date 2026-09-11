@@ -1,5 +1,5 @@
 import { mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
-import { basename, extname, join, resolve } from 'node:path';
+import { basename, extname, join, relative, resolve } from 'node:path';
 
 const MIME_BY_EXT = new Map([
   ['.jpg','image/jpeg'],['.jpeg','image/jpeg'],['.png','image/png'],['.webp','image/webp'],['.gif','image/gif'],
@@ -49,6 +49,13 @@ export function createTempPath(baseDir, direction, id, fileName, mimeType) {
   const folder = direction === 'simplex' ? 'simplex-in' : 'whatsapp-in';
   const fallback = `media-${String(id || Date.now())}${extensionForMime(mimeType) || '.bin'}`;
   return join(root, folder, `${safeToken(id)}-${safeFileName(fileName, fallback)}`);
+}
+
+export function isManagedMediaPath(filePath, baseDir) {
+  if (!filePath) return false;
+  const root = ensureMediaDir(baseDir);
+  const rel = relative(root, resolve(filePath));
+  return rel !== '' && !rel.startsWith('..') && !rel.startsWith('/') && !rel.startsWith('\\');
 }
 
 export function writeTempFile(path, buffer) {
