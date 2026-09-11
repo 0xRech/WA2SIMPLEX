@@ -5,6 +5,11 @@ function bool(value, fallback = false) {
   return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
 }
 
+function number(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function required(name) {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`Missing required environment variable: ${name}`);
@@ -17,10 +22,19 @@ export function loadConfig() {
     throw new Error('SIMPLEX_CONTROL_TARGET must be a direct SimpleX contact such as @2. SIMPLEX_TARGET is accepted as a legacy alias.');
   }
 
+  const mediaMaxMb = number(process.env.MEDIA_MAX_MB, 32);
+  const retentionMinutes = number(process.env.MEDIA_RETENTION_MINUTES, 60);
+
   return {
     port: Number(process.env.PORT || 3000),
     logLevel: process.env.LOG_LEVEL || 'info',
     dbPath: process.env.DB_PATH || './data/wa2simplex.db',
+    media: {
+      enabled: bool(process.env.MEDIA_ENABLED, true),
+      dir: process.env.MEDIA_DIR || './data/media',
+      maxBytes: Math.floor(mediaMaxMb * 1024 * 1024),
+      retentionMs: Math.floor(retentionMinutes * 60 * 1000)
+    },
     whatsapp: {
       verifyToken: required('WHATSAPP_VERIFY_TOKEN'),
       accessToken: required('WHATSAPP_ACCESS_TOKEN'),
