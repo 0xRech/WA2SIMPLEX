@@ -1,8 +1,8 @@
 {
   "name": "wa2simplex",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.1",
   "private": true,
-  "description": "Privacy-minded bridge between WhatsApp Cloud API and SimpleX Chat",
+  "description": "Public-alpha privacy-minded bridge between WhatsApp Cloud API and SimpleX Chat",
   "type": "module",
   "main": "src/index.js",
   "scripts": {
