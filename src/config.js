@@ -40,7 +40,7 @@ export function loadConfig() {
       accessToken: required('WHATSAPP_ACCESS_TOKEN'),
       phoneNumberId: required('WHATSAPP_PHONE_NUMBER_ID'),
       appSecret: required('WHATSAPP_APP_SECRET'),
-      apiVersion: process.env.WHATSAPP_API_VERSION || 'v23.0',
+      apiVersion: process.env.WHATSAPP_API_VERSION || 'v26.0',
       markRead: bool(process.env.WHATSAPP_MARK_READ, true)
     },
     simplex: {
