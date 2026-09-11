@@ -12,14 +12,15 @@ function required(name) {
 }
 
 export function loadConfig() {
-  const simplexTarget = required('SIMPLEX_TARGET');
-  if (!/^[@#]\d+$/.test(simplexTarget)) {
-    throw new Error('SIMPLEX_TARGET must look like @2 (direct chat) or #5 (group).');
+  const controlTarget = (process.env.SIMPLEX_CONTROL_TARGET || process.env.SIMPLEX_TARGET || '').trim();
+  if (!/^@\d+$/.test(controlTarget)) {
+    throw new Error('SIMPLEX_CONTROL_TARGET must be a direct SimpleX contact such as @2. SIMPLEX_TARGET is accepted as a legacy alias.');
   }
 
   return {
     port: Number(process.env.PORT || 3000),
     logLevel: process.env.LOG_LEVEL || 'info',
+    dbPath: process.env.DB_PATH || './data/wa2simplex.db',
     whatsapp: {
       verifyToken: required('WHATSAPP_VERIFY_TOKEN'),
       accessToken: required('WHATSAPP_ACCESS_TOKEN'),
@@ -30,8 +31,9 @@ export function loadConfig() {
     },
     simplex: {
       wsUrl: process.env.SIMPLEX_WS_URL || 'ws://127.0.0.1:5225',
-      target: simplexTarget,
-      restrictToTarget: bool(process.env.SIMPLEX_RESTRICT_TO_TARGET, true)
+      controlTarget,
+      ownerContactId: Number(controlTarget.slice(1)),
+      groupPrefix: (process.env.SIMPLEX_GROUP_PREFIX || 'WA').trim().slice(0, 16) || 'WA'
     }
   };
 }
