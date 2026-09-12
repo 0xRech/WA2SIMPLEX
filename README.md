@@ -2,6 +2,8 @@
 
 <div align="center">
 
+<img src="docs/assets/wa2-simplex-logo.png" alt="WA2 SimpleX — WhatsApp and SimpleX" width="560">
+
 # WA2SimpleX
 
 ### WhatsApp conversations in SimpleX — one chat per contact, now with media.
