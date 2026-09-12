@@ -17,8 +17,10 @@ function required(name) {
 }
 
 export function loadConfig() {
+  const provider = (process.env.WHATSAPP_PROVIDER || 'cloud').trim().toLowerCase();
+  if (!['cloud', 'web'].includes(provider)) throw new Error('WHATSAPP_PROVIDER must be cloud or web');
   const controlTarget = (process.env.SIMPLEX_CONTROL_TARGET || process.env.SIMPLEX_TARGET || '').trim();
-  if (!/^@\d+$/.test(controlTarget)) {
+  if ((controlTarget || provider === 'cloud') && !/^@[1-9]\d*$/.test(controlTarget)) {
     throw new Error('SIMPLEX_CONTROL_TARGET must be a direct SimpleX contact such as @2. SIMPLEX_TARGET is accepted as a legacy alias.');
   }
 
@@ -36,10 +38,13 @@ export function loadConfig() {
       retentionMs: Math.floor(retentionMinutes * 60 * 1000)
     },
     whatsapp: {
-      verifyToken: required('WHATSAPP_VERIFY_TOKEN'),
-      accessToken: required('WHATSAPP_ACCESS_TOKEN'),
-      phoneNumberId: required('WHATSAPP_PHONE_NUMBER_ID'),
-      appSecret: required('WHATSAPP_APP_SECRET'),
+      provider,
+      authPath: process.env.WHATSAPP_AUTH_PATH || './data/whatsapp/auth.db',
+      qrPath: process.env.WHATSAPP_QR_PATH || './data/whatsapp/pairing.txt',
+      verifyToken: provider === 'cloud' ? required('WHATSAPP_VERIFY_TOKEN') : '',
+      accessToken: provider === 'cloud' ? required('WHATSAPP_ACCESS_TOKEN') : '',
+      phoneNumberId: provider === 'cloud' ? required('WHATSAPP_PHONE_NUMBER_ID') : '',
+      appSecret: provider === 'cloud' ? required('WHATSAPP_APP_SECRET') : '',
       apiVersion: process.env.WHATSAPP_API_VERSION || 'v26.0',
       markRead: bool(process.env.WHATSAPP_MARK_READ, true)
     },
