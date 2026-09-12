@@ -16,6 +16,34 @@ function required(name) {
   return value;
 }
 
+export function parseGroupBridges(raw) {
+  const value = String(raw || '').trim();
+  if (!value) return [];
+
+  if (value.startsWith('[')) {
+    let parsed;
+    try { parsed = JSON.parse(value); }
+    catch (error) { throw new Error(`WA2SIMPLEX_GROUP_BRIDGES contains invalid JSON: ${error.message}`); }
+    if (!Array.isArray(parsed)) throw new Error('WA2SIMPLEX_GROUP_BRIDGES JSON must be an array');
+    return parsed;
+  }
+
+  return value.split(';').map((entry, index) => {
+    const trimmed = entry.trim();
+    if (!trimmed) return null;
+    const separator = trimmed.indexOf('=');
+    if (separator < 1) throw new Error(`Invalid group bridge #${index + 1}; expected SIMPLEX_GROUP_ID=WHATSAPP_GROUP_JID`);
+    const left = trimmed.slice(0, separator).trim();
+    const whatsappJid = trimmed.slice(separator + 1).trim();
+    const nameSeparator = left.indexOf('|');
+    const name = nameSeparator >= 0 ? left.slice(0, nameSeparator).trim() : '';
+    const simplexRaw = nameSeparator >= 0 ? left.slice(nameSeparator + 1).trim() : left;
+    const simplexGroupId = Number(simplexRaw.replace(/^#/, ''));
+    if (!Number.isInteger(simplexGroupId) || simplexGroupId <= 0) throw new Error(`Invalid SimpleX group ID in group bridge #${index + 1}`);
+    return { name: name || `#${simplexGroupId}`, simplexGroupId, whatsappJid };
+  }).filter(Boolean);
+}
+
 export function loadConfig() {
   const provider = (process.env.WHATSAPP_PROVIDER || 'cloud').trim().toLowerCase();
   if (!['cloud', 'web'].includes(provider)) throw new Error('WHATSAPP_PROVIDER must be cloud or web');
@@ -26,11 +54,16 @@ export function loadConfig() {
 
   const mediaMaxMb = number(process.env.MEDIA_MAX_MB, 32);
   const retentionMinutes = number(process.env.MEDIA_RETENTION_MINUTES, 60);
+  const groupBridges = parseGroupBridges(process.env.WA2SIMPLEX_GROUP_BRIDGES || process.env.GROUP_BRIDGES || '');
+  if (groupBridges.length && provider !== 'web') {
+    throw new Error('WA2SIMPLEX group bridges currently require WHATSAPP_PROVIDER=web');
+  }
 
   return {
     port: Number(process.env.PORT || 3000),
     logLevel: process.env.LOG_LEVEL || 'info',
     dbPath: process.env.DB_PATH || './data/wa2simplex.db',
+    groupBridges,
     media: {
       enabled: bool(process.env.MEDIA_ENABLED, true),
       dir: process.env.MEDIA_DIR || './data/media',
