@@ -8,6 +8,8 @@ import { openWhatsAppAuth } from './whatsapp-auth.js';
 import { normalizeWebMessage, readBoundedStream } from './whatsapp-web-message.js';
 import { safeFileName, whatsappMediaType } from './media.js';
 
+const GROUP_JID_RE = /^[0-9-]{6,64}@g\.us$/;
+
 export class WhatsAppWebClient {
   constructor({ authPath, qrPath, logger, onMessage, maxBytes = 32 * 1024 * 1024, socketFactory = makeWASocket }) {
     Object.assign(this, { authPath, qrPath, logger, onMessage, maxBytes });
@@ -34,7 +36,7 @@ export class WhatsAppWebClient {
       markOnlineOnConnect: false, syncFullHistory: false,
       shouldSyncHistoryMessage: () => false,
       getMessage: async () => undefined,
-      shouldIgnoreJid: jid => jid.endsWith('@g.us') || jid.endsWith('@broadcast') || jid.endsWith('@newsletter')
+      shouldIgnoreJid: jid => jid.endsWith('@broadcast') || jid.endsWith('@newsletter')
     });
     this.socket = socket;
     socket.ev.on('creds.update', () => this.auth.saveCreds());
@@ -106,8 +108,10 @@ export class WhatsAppWebClient {
     return this.socket;
   }
   jid(to) {
-    if (!/^\d{6,20}$/.test(String(to))) throw new Error('Invalid WhatsApp telephone number');
-    return `${to}@s.whatsapp.net`;
+    const target = String(to || '').trim();
+    if (GROUP_JID_RE.test(target)) return target;
+    if (!/^\d{6,20}$/.test(target)) throw new Error('Invalid WhatsApp telephone number or group JID');
+    return `${target}@s.whatsapp.net`;
   }
   sendText(to, text) { return this.connectedSocket().sendMessage(this.jid(to), { text: String(text) }); }
   async markRead(id) {
