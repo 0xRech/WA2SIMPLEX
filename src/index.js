@@ -6,6 +6,7 @@ import { WhatsAppClient, extractWhatsAppMessages, verifyMetaSignature } from './
 import { BridgeRouter } from './router.js';
 import { BridgeStore } from './storage.js';
 
+process.umask(0o077);
 const config = loadConfig();
 const logger = createLogger(config.logLevel);
 const app = express();
@@ -19,8 +20,18 @@ app.use(express.json({
 }));
 
 const simplex = new SimplexClient({ url: config.simplex.wsUrl, logger });
-const whatsapp = new WhatsAppClient({ ...config.whatsapp, logger });
-const router = new BridgeRouter({
+const webMode = config.whatsapp.provider === 'web';
+let router;
+const whatsapp = webMode
+  ? new (await import('./whatsapp-web.js')).WhatsAppWebClient({
+    ...config.whatsapp, logger, maxBytes: config.media.maxBytes,
+    onMessage: async message => {
+      if (!router) return;
+      await router.handleWhatsApp(message);
+    }
+  })
+  : new WhatsAppClient({ ...config.whatsapp, logger });
+router = config.simplex.controlTarget ? new BridgeRouter({
   simplex,
   whatsapp,
   store,
@@ -33,9 +44,10 @@ const router = new BridgeRouter({
   maxMediaBytes: config.media.maxBytes,
   mediaRetentionMs: config.media.retentionMs,
   logger
-});
+}) : null;
 
 simplex.on('event', (event) => {
+  if (!router) return;
   router.handleSimplexEvent(event).catch((error) => {
     logger.error('SimpleX event handling failed', { error: error.message });
   });
@@ -47,6 +59,9 @@ app.get('/health', (_req, res) => {
     service: 'WA2SimpleX',
     version: '0.3.0-alpha.1',
     simplexConnected: simplex.ws?.readyState === 1,
+    whatsappProvider: config.whatsapp.provider,
+    whatsappStatus: webMode ? whatsapp.status : 'cloud_configured',
+    routingConfigured: Boolean(router),
     mediaBridge: config.media.enabled,
     mediaMaxBytes: config.media.maxBytes,
     contacts: store.stats(),
@@ -55,6 +70,7 @@ app.get('/health', (_req, res) => {
 });
 
 app.get('/webhook', (req, res) => {
+  if (webMode) return res.sendStatus(404);
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
@@ -67,6 +83,7 @@ app.get('/webhook', (req, res) => {
 });
 
 app.post('/webhook', (req, res) => {
+  if (webMode) return res.sendStatus(404);
   const signature = req.get('x-hub-signature-256');
   if (!verifyMetaSignature(req.rawBody, signature, config.whatsapp.appSecret)) {
     logger.warn('Rejected WhatsApp webhook with invalid signature');
@@ -94,15 +111,28 @@ const server = app.listen(config.port, '0.0.0.0', () => {
 });
 
 simplex.start()
-  .then(() => router.initialize())
+  .then(() => router?.initialize())
   .catch((error) => logger.error('Initial SimpleX connection failed', { error: error.message }));
 
-function shutdown(signal) {
+if (webMode) {
+  if (!router) logger.warn('Pairing only: configure SIMPLEX_CONTROL_TARGET before forwarding messages');
+  whatsapp.start().catch(error => {
+    logger.error('WhatsApp startup failed', { error: error.message });
+    shutdown('startup_failure');
+  });
+}
+
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
   logger.info('Shutting down', { signal });
+  const deadline = setTimeout(() => process.exit(1), 5000);
+  deadline.unref();
+  if (webMode) await whatsapp.stop().catch(() => {});
   simplex.stop();
   store.close();
   server.close(() => process.exit(0));
-  setTimeout(() => process.exit(1), 5000).unref();
 }
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));

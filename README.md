@@ -1,3 +1,5 @@
+> **Rechgroup server extension:** Optional WhatsApp QR pairing is available with `WHATSAPP_PROVIDER=web`. See [WHATSAPP-WEB.md](WHATSAPP-WEB.md). The original Cloud API documentation follows below.
+
 <div align="center">
 
 # WA2SimpleX
