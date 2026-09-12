@@ -1,3 +1,4 @@
+import { isWhatsAppGroup, normalizeChatAddress, displayChatAddress } from './whatsapp-address.js';
 import {
   createTempPath,
   extensionForMime,
@@ -63,7 +64,7 @@ export class BridgeRouter {
       let recovered = 0;
       for (const group of groups) {
         const meta = group?.customData?.wa2simplex;
-        const phone = normalizeNumber(meta?.phone);
+        const phone = normalizeNumber(meta?.chatId || meta?.phone);
         if (!phone || !Number.isInteger(group?.groupId)) continue;
         const existing = this.store.getContact(phone);
         this.store.upsertContact(phone, meta?.displayName || existing?.displayName || phone, { touch: false });
@@ -79,10 +80,9 @@ export class BridgeRouter {
   }
 
   async handleWhatsApp(message) {
-    if (!message?.id || !this.store.claimMessage(message.id)) return;
-
-    const phone = normalizeNumber(message.from);
+    const phone = normalizeNumber(message?.from);
     if (!phone) return;
+    if (!message?.id || !this.store.claimMessage(message.id)) return;
     const displayName = cleanDisplayName(message.name || phone);
     let contact = await this.#ensureContactGroup(phone, displayName);
     if (contact.archived) contact = this.store.setArchived(phone, false);
@@ -92,7 +92,7 @@ export class BridgeRouter {
     if (this.mediaEnabled && message.media?.id) {
       await this.#forwardWhatsAppMedia(message, contact, groupRef);
     } else {
-      const displayText = message.text || `[${message.type || 'message'}]`;
+      const displayText = incomingText(message, message.text || `[${message.type || 'message'}]`);
       await this.simplex.sendText(groupRef, displayText);
       if (!contact.ready) await this.#mirrorPendingText(contact, phone, displayText, groupRef);
     }
@@ -178,7 +178,7 @@ export class BridgeRouter {
       );
       path = createTempPath(this.mediaDir, 'whatsapp', message.id, fileName, mimeType);
       writeTempFile(path, downloaded.buffer);
-      const caption = message.media.caption || mediaLabel(message.media.kind, fileName);
+      const caption = incomingText(message, message.media.caption || mediaLabel(message.media.kind, fileName));
 
       const groupResult = await this.simplex.sendFile(groupRef, path, caption);
       this.#trackSimplexSend(groupResult, path);
@@ -187,7 +187,7 @@ export class BridgeRouter {
         const controlResult = await this.simplex.sendFile(
           this.controlTarget,
           path,
-          `📲 ${contact.displayName} · +${contact.phone}\n${caption}`
+          `📲 ${contact.displayName} · ${displayChatAddress(contact.phone)}\n${caption}`
         );
         this.#trackSimplexSend(controlResult, path);
         await this.simplex.sendText(
@@ -352,7 +352,7 @@ export class BridgeRouter {
 
   async #mirrorPendingText(contact, phone, displayText, groupRef) {
     await this.simplex.sendText(this.controlTarget, [
-      `📲 ${contact.displayName} · +${phone}`,
+      `📲 ${contact.displayName} · ${displayChatAddress(phone)}`,
       displayText,
       '',
       `⏳ Chat ${groupRef} wurde angelegt. Bitte die SimpleX-Gruppeneinladung einmalig annehmen.`,
@@ -371,7 +371,7 @@ export class BridgeRouter {
       await this.simplex.sendText(this.controlTarget, [
         '⚡ WA2SimpleX Status',
         '',
-        `Kontakte: ${stats.total}`,
+        `Chats (Kontakte und Gruppen): ${stats.total}`,
         `Aktiv: ${stats.active}`,
         `Archiviert: ${stats.archived}`,
         `Bereite Kontakt-Chats: ${stats.ready}`,
@@ -381,12 +381,13 @@ export class BridgeRouter {
       return;
     }
 
-    if (text === '/contacts') {
-      const contacts = this.store.listContacts(50);
-      const lines = contacts.length
-        ? contacts.map((contact) => `${contact.archived ? '📦' : contact.ready ? '🟢' : '🟡'} ${contact.displayName} · +${contact.phone}${contact.simplexGroupId ? ` · #${contact.simplexGroupId}` : ''}`)
-        : ['Noch keine WhatsApp-Kontakte.'];
-      await this.simplex.sendText(this.controlTarget, ['📇 WA2SimpleX Kontakte', '', ...lines].join('\n'));
+    if (text === '/contacts' || text === '/groups') {
+      const contacts = this.store.listContacts(text === '/groups' ? 500 : 50);
+      const selected = text === '/groups' ? contacts.filter(c => isWhatsAppGroup(c.phone)).slice(0, 50) : contacts;
+      const lines = selected.length
+        ? selected.map((contact) => `${contact.archived ? '📦' : contact.ready ? '🟢' : '🟡'} ${contact.displayName} · ${displayChatAddress(contact.phone)}${contact.simplexGroupId ? ` · #${contact.simplexGroupId}` : ''}`)
+        : ['Noch keine passenden WhatsApp-Chats.'];
+      await this.simplex.sendText(this.controlTarget, ['📇 WA2SimpleX Chats', '', ...lines].join('\n'));
       return;
     }
 
@@ -438,7 +439,7 @@ export class BridgeRouter {
     if (text === '/info') {
       await this.simplex.sendText(ref, [
         `📱 ${contact.displayName}`,
-        `WhatsApp: +${contact.phone}`,
+        `WhatsApp: ${displayChatAddress(contact.phone)}`,
         `SimpleX: #${contact.simplexGroupId}`,
         `Status: ${contact.archived ? 'archiviert' : 'aktiv'}`,
         `Medien: ${this.mediaEnabled ? 'aktiv' : 'aus'}`
@@ -511,7 +512,12 @@ export class BridgeRouter {
 
   async #ensureContactGroup(phone, displayName) {
     const normalized = normalizeNumber(phone);
+    const previous = this.store.getContact(normalized);
     const existing = this.store.upsertContact(normalized, displayName || normalized);
+    if (isWhatsAppGroup(normalized) && previous?.simplexGroupId && previous.displayName !== existing.displayName) {
+      await this.simplex.updateGroupName(previous.simplexGroupId, makeGroupName(this.groupPrefix, existing.displayName, normalized))
+        .catch(error => this.logger.warn('Could not refresh WhatsApp group title', { error: error.message }));
+    }
     if (existing.simplexGroupId) return existing;
     if (this.contactLocks.has(normalized)) return this.contactLocks.get(normalized);
 
@@ -525,14 +531,18 @@ export class BridgeRouter {
     const groupName = makeGroupName(this.groupPrefix, contact.displayName, contact.phone);
     const groupInfo = await this.simplex.createGroup({
       displayName: groupName,
-      description: `Private WA2SimpleX bridge for +${contact.phone}. No WhatsApp message history is stored by WA2SimpleX.`
+      description: isWhatsAppGroup(contact.phone)
+        ? `WhatsApp group bridge: ${contact.displayName}. Replies go to the WhatsApp group using the linked account. WhatsApp participants are not added to this SimpleX group.`
+        : `Private WA2SimpleX bridge for +${contact.phone}. No WhatsApp message history is stored by WA2SimpleX.`
     });
     const groupId = groupInfo.groupId;
 
     await this.simplex.addMember(groupId, this.ownerContactId, 'admin');
     await this.simplex.setGroupCustomData(groupId, {
       wa2simplex: {
-        version: 2,
+        version: 3,
+        chatId: contact.phone,
+        kind: isWhatsAppGroup(contact.phone) ? 'group' : 'direct',
         phone: contact.phone,
         displayName: contact.displayName
       }
@@ -596,7 +606,7 @@ export class BridgeRouter {
       });
       await this.simplex.sendText(
         errorTarget || this.controlTarget,
-        `❌ WhatsApp-Versand an +${normalized} fehlgeschlagen.\n${safeError(error)}`
+        `❌ WhatsApp-Versand an ${displayChatAddress(normalized)} fehlgeschlagen.\n${safeError(error)}`
       );
     }
   }
@@ -630,6 +640,7 @@ export function messageContentText(content) {
 
 export function makeGroupName(prefix, displayName, phone) {
   const name = cleanDisplayName(displayName || phone).slice(0, 42);
+  if (isWhatsAppGroup(phone)) return `${cleanDisplayName(prefix || 'WA')} Gruppe · ${name} · ${phone.split('@')[0].slice(-4)}`.slice(0, 64);
   const suffix = normalizeNumber(phone).slice(-4) || 'WA';
   return `${cleanDisplayName(prefix || 'WA')} · ${name} · ${suffix}`.slice(0, 64);
 }
@@ -652,7 +663,11 @@ function isReceived(type) {
 }
 
 function normalizeNumber(value) {
-  return String(value || '').replace(/[^0-9]/g, '');
+  return normalizeChatAddress(value);
+}
+
+function incomingText(message, text) {
+  return isWhatsAppGroup(message.from) ? `${cleanDisplayName(message.senderName || 'Teilnehmer')}:\n${text}` : text;
 }
 
 function cleanDisplayName(value) {
@@ -691,11 +706,13 @@ function controlHelpText(mediaEnabled) {
     '⚡ WA2SimpleX Control',
     '',
     '/status — Status und Kontaktzahlen',
-    '/contacts — WhatsApp-Kontakte und SimpleX-Chats',
+    '/contacts — WhatsApp-Kontakte und Gruppen',
+    '/groups — bereits verknüpfte WhatsApp-Gruppen',
     '/new +491701234567 Max — Kontakt-Chat vorab anlegen',
     '/archive +491701234567 — Kontakt archivieren',
     '/unarchive +491701234567 — Archivierung aufheben',
     '/repair +491701234567 — SimpleX-Chat neu erstellen',
+    '/repair #12 — zugeordneten SimpleX-Chat neu erstellen (auch Gruppen)',
     '/wa +491701234567 Nachricht — direkte WhatsApp-Nachricht',
     '',
     `Medien-Bridge: ${mediaEnabled ? 'aktiv — Dateien im Kontakt-Chat werden übertragen' : 'deaktiviert'}`,

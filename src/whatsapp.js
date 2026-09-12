@@ -12,6 +12,7 @@ export class WhatsAppClient {
   }
 
   async sendText(to, text) {
+    if (String(to).includes('@')) throw new Error('Cloud provider supports phone numbers only');
     return this.#jsonRequest(`/${this.phoneNumberId}/messages`, {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
@@ -89,6 +90,7 @@ export class WhatsAppClient {
   }
 
   async sendFile(to, { filePath, mimeType, fileName, caption = '', maxBytes } = {}) {
+    if (String(to).includes('@')) throw new Error('Cloud provider supports phone numbers only');
     const type = whatsappMediaType(mimeType, fileName || filePath);
     const mediaId = await this.uploadMedia(filePath, { mimeType, fileName, maxBytes });
     const media = { id: mediaId };

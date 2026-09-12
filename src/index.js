@@ -60,6 +60,7 @@ app.get('/health', (_req, res) => {
     version: '0.3.0-alpha.1',
     simplexConnected: simplex.ws?.readyState === 1,
     whatsappProvider: config.whatsapp.provider,
+    whatsappGroupsEnabled: config.whatsapp.groupsEnabled,
     whatsappStatus: webMode ? whatsapp.status : 'cloud_configured',
     routingConfigured: Boolean(router),
     mediaBridge: config.media.enabled,

@@ -7,9 +7,10 @@ import { dirname } from 'node:path';
 import { openWhatsAppAuth } from './whatsapp-auth.js';
 import { normalizeWebMessage, readBoundedStream } from './whatsapp-web-message.js';
 import { safeFileName, whatsappMediaType } from './media.js';
+import { isWhatsAppGroup } from './whatsapp-address.js';
 
 export class WhatsAppWebClient {
-  constructor({ authPath, qrPath, logger, onMessage, maxBytes = 32 * 1024 * 1024, socketFactory = makeWASocket }) {
+  constructor({ authPath, qrPath, logger, onMessage, maxBytes = 32 * 1024 * 1024, socketFactory = makeWASocket, groupsEnabled = true }) {
     Object.assign(this, { authPath, qrPath, logger, onMessage, maxBytes });
     this.status = 'stopped';
     this.stopped = true;
@@ -19,6 +20,8 @@ export class WhatsAppWebClient {
     this.queued = 0;
     this.libraryLogger = pino({ level: 'silent' });
     this.socketFactory = socketFactory;
+    this.groupsEnabled = groupsEnabled;
+    this.groupCache = new Map();
   }
   async start() {
     this.stopped = false;
@@ -34,9 +37,13 @@ export class WhatsAppWebClient {
       markOnlineOnConnect: false, syncFullHistory: false,
       shouldSyncHistoryMessage: () => false,
       getMessage: async () => undefined,
-      shouldIgnoreJid: jid => jid.endsWith('@g.us') || jid.endsWith('@broadcast') || jid.endsWith('@newsletter')
+      cachedGroupMetadata: async jid => this.cachedGroup(jid),
+      shouldIgnoreJid: jid => (!this.groupsEnabled && jid.endsWith('@g.us')) || jid.endsWith('@broadcast') || jid.endsWith('@newsletter')
     });
     this.socket = socket;
+    this.groupCache.clear();
+    socket.ev.on('groups.update', updates => { for (const group of updates) this.groupCache.delete(group.id); });
+    socket.ev.on('group-participants.update', update => this.groupCache.delete(update.id));
     socket.ev.on('creds.update', () => this.auth.saveCreds());
     socket.ev.on('connection.update', update => {
       if (this.stopped || this.socket !== socket) return;
@@ -63,6 +70,8 @@ export class WhatsAppWebClient {
         socket.ev.removeAllListeners('connection.update');
         socket.ev.removeAllListeners('messages.upsert');
         socket.ev.removeAllListeners('creds.update');
+        socket.ev.removeAllListeners('groups.update');
+        socket.ev.removeAllListeners('group-participants.update');
         this.logger.warn('WhatsApp connection closed', { code, status: this.status });
         if (!permanent) {
           const delay = code === DisconnectReason.restartRequired ? 1000 : Math.min(60000, 3000 * 2 ** Math.min(this.attempt++, 5));
@@ -80,8 +89,12 @@ export class WhatsAppWebClient {
         this.queued++;
         this.queue = this.queue.then(async () => {
           if (this.stopped) return;
-          const message = await normalizeWebMessage(raw, lid => socket.signalRepository?.lidMapping?.getPNForLID(lid));
+          const message = await normalizeWebMessage(raw, lid => socket.signalRepository?.lidMapping?.getPNForLID(lid), { groupsEnabled: this.groupsEnabled });
           if (!message) return;
+          if (message.chatType === 'group') {
+            const metadata = await this.getGroup(message.from).catch(() => null);
+            message.name = metadata?.subject || `Gruppe ${message.from.split('@')[0].slice(-6)}`;
+          }
           this.pending.set(message.id, raw);
           try { await this.onMessage(message); }
           finally { this.pending.delete(message.id); }
@@ -105,7 +118,24 @@ export class WhatsAppWebClient {
     if (this.status !== 'connected') throw new Error('WhatsApp is not connected');
     return this.socket;
   }
+  cachedGroup(jid) {
+    const entry = this.groupCache.get(jid);
+    if (entry && entry.expires > Date.now()) return entry.metadata;
+    this.groupCache.delete(jid);
+  }
+  async getGroup(jid) {
+    const cached = this.cachedGroup(jid);
+    if (cached) return cached;
+    const metadata = await this.connectedSocket().groupMetadata(jid);
+    if (this.groupCache.size >= 200) this.groupCache.delete(this.groupCache.keys().next().value);
+    this.groupCache.set(jid, { metadata, expires: Date.now() + 5 * 60 * 1000 });
+    return metadata;
+  }
   jid(to) {
+    if (isWhatsAppGroup(to)) {
+      if (!this.groupsEnabled) throw new Error('WhatsApp group support is disabled');
+      return to;
+    }
     if (!/^\d{6,20}$/.test(String(to))) throw new Error('Invalid WhatsApp telephone number');
     return `${to}@s.whatsapp.net`;
   }

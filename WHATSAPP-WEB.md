@@ -46,7 +46,7 @@ Edit `/srv/rechgroup/projects/wa2simplex/config/bridge.env`, set the intended ow
   The auth database has mode 0600 and the process umask is 0077.
 - No chat-history store is implemented. History synchronization is disabled and append
   events are ignored. Live incoming direct messages are processed in a bounded queue.
-- Own messages, group chats, broadcasts, newsletters and view-once content are ignored.
+- Own messages, broadcasts, newsletters and view-once content are ignored. Group chats are supported as described below.
 - LIDs are resolved through phone mappings; an unresolved LID is never treated as a number.
 - Supported: direct text, images, video, audio, documents, stickers as incoming attachments,
   and static location text. Outgoing media uses the existing bridge MIME mapping.
@@ -67,3 +67,30 @@ has not been separately confirmed.
 
 Development branch: `feature/whatsapp-web`.
 The original Cloud API Docker image remains available as `rechgroup/wa2simplex:0.3.0-alpha.1`.
+
+
+## WhatsApp groups
+
+`WHATSAPP_GROUPS_ENABLED=true` enables group bridging for the web provider (default).
+The first new incoming message from another member creates a separate SimpleX group
+named `WA Gruppe · <subject> · <suffix>`. Accept its invitation once. Incoming text and
+media captions identify the sender. Replies and files in that SimpleX group are sent
+to the original WhatsApp group using the linked WhatsApp account.
+
+WhatsApp participants are not invited to SimpleX. Membership changes, admin actions,
+reactions, edits and history are not mirrored. WhatsApp permissions still apply, including
+announcement-only groups. `/groups` lists already mapped groups; `/contacts` lists all
+mapped chats. `/info`, `/archive`, `/rename` and `/repair #<SimpleX-group-ID>` work with
+group routes. A subsequent WhatsApp subject refresh may update the local group title.
+
+The existing SQLite `contacts.phone` column now holds either a telephone number or the
+full group JID. No destructive migration is required, and existing direct mappings stay
+unchanged. Recovery metadata version 3 includes chatId/kind and accepts legacy phone
+metadata. LIDs and group JIDs are never converted into phone numbers. Cloud mode rejects
+group destinations explicitly.
+
+28 tests pass, covering routing separation, sender labels, group media, exact outbound
+destinations, legacy metadata recovery and persistence. Deployment reconnects both
+services successfully. A real group message/media roundtrip still needs operator testing.
+Before rolling back to a version without group support, restore the matching pre-upgrade
+database snapshot as well; older code does not understand group route keys.

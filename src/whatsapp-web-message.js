@@ -1,14 +1,17 @@
+import { isWhatsAppGroup } from './whatsapp-address.js';
 const MEDIA = ['image', 'video', 'audio', 'document', 'sticker'];
 export function phoneFromJid(jid) {
   const match = /^(\d{6,20})(?::\d+)?@s\.whatsapp\.net$/.exec(String(jid || ''));
   return match?.[1] || null;
 }
 
-export async function normalizeWebMessage(raw, resolveLid = async () => null) {
+export async function normalizeWebMessage(raw, resolveLid = async () => null, { groupsEnabled = true } = {}) {
   const key = raw?.key;
   const jid = key?.remoteJid || '';
-  if (!key?.id || key.fromMe || (!jid.endsWith('@s.whatsapp.net') && !jid.endsWith('@lid'))) return null;
-  let from = phoneFromJid(jid);
+  const group = isWhatsAppGroup(jid);
+  if (!key?.id || key.fromMe || (group && !groupsEnabled) || (!group && !jid.endsWith('@s.whatsapp.net') && !jid.endsWith('@lid'))) return null;
+  if (group && !/^[\d:]+@(s\.whatsapp\.net|lid)$/.test(key.participant || '')) return null;
+  let from = group ? jid : phoneFromJid(jid);
   if (!from && jid.endsWith('@lid')) from = phoneFromJid(key.remoteJidAlt) || phoneFromJid(await resolveLid(jid));
   if (!from) return null; // Never interpret a LID as a telephone number.
   let body = raw.message;
@@ -20,8 +23,14 @@ export async function normalizeWebMessage(raw, resolveLid = async () => null) {
     body = inner;
   }
   if (!body) return null;
-  const id = `web:${from}:${key.id}`;
-  const base = { id, from, name: raw.pushName || from, timestamp: String(raw.messageTimestamp || ''), raw };
+  const id = group ? `web:${jid}:${key.participant}:${key.id}` : `web:${from}:${key.id}`;
+  const base = { id, from, name: group ? 'WhatsApp-Gruppe' : raw.pushName || from, timestamp: String(raw.messageTimestamp || ''), raw };
+  if (group) {
+    base.chatType = 'group';
+    base.senderName = String(raw.pushName || phoneFromJid(key.participantAlt) || phoneFromJid(key.participant) || key.participant)
+      .replace(/[\r\n\t]+/g, ' ').slice(0, 120);
+    base.senderId = key.participant;
+  }
   const text = body.conversation ?? body.extendedTextMessage?.text;
   if (typeof text === 'string' && text) return { ...base, type: 'text', text, media: null };
   for (const kind of MEDIA) {

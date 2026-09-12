@@ -39,7 +39,7 @@ function setup({ memberStatus = 'invited', mediaEnabled = true } = {}) {
     },
     async createGroup() {
       groupCreates += 1;
-      return { groupId: 17, groupProfile: {} };
+      return { groupId: 16 + groupCreates, groupProfile: {} };
     },
     async addMember() { return { type: 'sentGroupInvitation' }; },
     async setGroupCustomData() { return { type: 'cmdOk' }; },
@@ -81,6 +81,7 @@ function setup({ memberStatus = 'invited', mediaEnabled = true } = {}) {
   });
 
   return {
+    simplex,
     router,
     store,
     sentSimplex,
@@ -256,4 +257,56 @@ test('keeps v0.1 parsing helpers for migration and fallback commands', () => {
   assert.equal(chatRefFromInfo({ type: 'group', groupInfo: { groupId: 4 } }), '#4');
   assert.equal(messageContentText({ type: 'text', text: 'quoted' }), 'quoted');
   assert.match(makeGroupName('WA', 'Max Mustermann', '491701234567'), /^WA · Max Mustermann · 4567$/);
+});
+
+test('group messages share one route, preserve sender names and stay separate from direct chats', async () => {
+  const ctx = setup({ memberStatus: 'complete' });
+  const jid = '120363123456789@g.us';
+  try {
+    await ctx.router.handleWhatsApp({ id: 'direct', from: '120363123456789', name: 'Person', text: 'Private' });
+    await ctx.router.handleWhatsApp({ id: 'g1', from: jid, name: 'Team', senderName: 'Alice', text: 'Hello' });
+    await ctx.router.handleWhatsApp({ id: 'g2', from: jid, name: 'Team', senderName: 'Bob', text: 'Hi' });
+    assert.equal(ctx.groupCreates(), 2);
+    assert.equal(ctx.store.getContact(jid).simplexGroupId, 18);
+    assert.equal(ctx.store.getContact('120363123456789').simplexGroupId, 17);
+    assert.ok(ctx.sentSimplex.some(m => m.ref === '#18' && m.text === 'Alice:\nHello'));
+    assert.ok(ctx.sentSimplex.some(m => m.ref === '#18' && m.text === 'Bob:\nHi'));
+    await ctx.router.handleSimplexEvent({type:'newChatItems',chatItems:[{
+      chatInfo:{type:'group',groupInfo:{groupId:18}},
+      chatItem:{chatDir:{type:'groupRcv'},content:{type:'rcvMsgContent',msgContent:{type:'text',text:'Reply'}}}
+    }]});
+    assert.deepEqual(ctx.sentWhatsApp, [{to:jid,text:'Reply'}]);
+  } finally { ctx.close(); }
+});
+
+test('group media keeps sender captions and sends attachments back to the exact group JID', async () => {
+  const ctx = setup({memberStatus:'complete'});
+  const jid = '491701234567-1234567890@g.us';
+  try {
+    ctx.store.upsertContact(jid,'Family'); ctx.store.bindGroup(jid,17); ctx.store.setReadyByGroup(17,true);
+    await ctx.router.handleWhatsApp({id:'group-media',from:jid,name:'Family',senderName:'Alice',media:{id:'m',kind:'image',mimeType:'image/jpeg',caption:'Photo'}});
+    assert.equal(ctx.sentFiles[0].text,'Alice:\nPhoto');
+    const path=join(tmpdir(),`wa-group-test-${Date.now()}.txt`); writeFileSync(path,'content');
+    try {
+      await ctx.router.handleSimplexEvent({type:'newChatItems',chatItems:[{
+        chatInfo:{type:'group',groupInfo:{groupId:17}},
+        chatItem:{chatDir:{type:'groupRcv'},content:{type:'rcvMsgContent',msgContent:{type:'file',text:'Attachment'}},
+        file:{fileId:99,fileName:'test.txt',fileSize:7,fileStatus:{type:'rcvComplete'},fileSource:{filePath:path}}}
+      }]});
+      assert.equal(ctx.sentWhatsAppFiles[0].to,jid);
+    } finally {rmSync(path,{force:true});}
+  } finally {ctx.close();}
+});
+
+test('mapping recovery preserves group IDs and still accepts legacy phone metadata', async () => {
+  const ctx=setup();
+  try {
+    ctx.simplex.listGroups=async()=>[
+      {groupId:17,customData:{wa2simplex:{version:2,phone:'491701234567',displayName:'Person'}}},
+      {groupId:18,customData:{wa2simplex:{version:3,chatId:'120363123456789@g.us',kind:'group',displayName:'Team'}}}
+    ];
+    await ctx.router.initialize();
+    assert.equal(ctx.store.getByGroupId(17).phone,'491701234567');
+    assert.equal(ctx.store.getByGroupId(18).phone,'120363123456789@g.us');
+  } finally {ctx.close();}
 });

@@ -50,6 +50,8 @@ export class BridgeStore {
   }
 
   upsertContact(phone, displayName, { touch = true } = {}) {
+    // The legacy "phone" column is a route key: phone number OR full @g.us JID.
+    // Keeping the existing primary key preserves all direct-chat mappings on upgrade.
     const now = new Date().toISOString();
     this.db.prepare(`
       INSERT INTO contacts(phone, display_name, created_at, updated_at, last_seen_at)
