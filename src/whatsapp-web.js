@@ -140,6 +140,29 @@ export class WhatsAppWebClient {
     return `${to}@s.whatsapp.net`;
   }
   sendText(to, text) { return this.connectedSocket().sendMessage(this.jid(to), { text: String(text) }); }
+  async getProfilePicture(to) {
+    let timer;
+    let url;
+    try {
+      url = await Promise.race([
+        this.connectedSocket().profilePictureUrl(this.jid(to), 'image', 10000),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Profile picture timeout')), 12000); })
+      ]);
+    } catch (error) {
+      const status = error?.output?.statusCode;
+      if (status === 401 || status === 403 || status === 404) return null;
+      throw error;
+    } finally { clearTimeout(timer); }
+    if (!url) return null;
+    const target = new URL(url);
+    if (target.protocol !== 'https:' || !['whatsapp.net', 'fbcdn.net'].some(domain => target.hostname === domain || target.hostname.endsWith(`.${domain}`))) {
+      throw new Error('Unexpected profile picture host');
+    }
+    const response = await fetch(target, { signal: AbortSignal.timeout(10000), redirect: 'error' });
+    if (!response.ok) throw new Error('Profile picture download failed');
+    if (Number(response.headers.get('content-length')) > 2 * 1024 * 1024) throw new Error('Profile picture too large');
+    return readBoundedStream(response.body, 2 * 1024 * 1024);
+  }
   async markRead(id) {
     const raw = this.pending.get(id);
     if (raw) await this.connectedSocket().readMessages([raw.key]);

@@ -40,6 +40,8 @@ export function loadConfig() {
     whatsapp: {
       provider,
       groupsEnabled: provider === 'web' && bool(process.env.WHATSAPP_GROUPS_ENABLED, true),
+      avatarsEnabled: provider === 'web' && bool(process.env.WHATSAPP_AVATARS_ENABLED, true),
+      avatarIntervalMs: number(process.env.WHATSAPP_AVATAR_REFRESH_HOURS, 6) * 60 * 60 * 1000,
       authPath: process.env.WHATSAPP_AUTH_PATH || './data/whatsapp/auth.db',
       qrPath: process.env.WHATSAPP_QR_PATH || './data/whatsapp/pairing.txt',
       verifyToken: provider === 'cloud' ? required('WHATSAPP_VERIFY_TOKEN') : '',

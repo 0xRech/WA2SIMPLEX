@@ -14,6 +14,7 @@ export class SimplexClient extends EventEmitter {
     this.reconnectAttempt = 0;
     this.connectPromise = null;
     this.activeUserId = null;
+    this.profileUpdates = new Map();
   }
 
   start() {
@@ -120,11 +121,24 @@ export class SimplexClient extends EventEmitter {
   }
 
   async updateGroupName(groupId, displayName) {
-    const groups = await this.listGroups();
-    const group = groups.find((item) => Number(item?.groupId) === Number(groupId));
-    if (!group?.groupProfile) throw new Error(`SimpleX group #${groupId} not found`);
-    const profile = { ...group.groupProfile, displayName: String(displayName), fullName: String(displayName) };
-    return this.sendCommand(`/_group_profile #${Number(groupId)} ${JSON.stringify(profile)}`);
+    return this.updateGroupProfile(groupId, { displayName: String(displayName), fullName: String(displayName) });
+  }
+
+  updateGroupImage(groupId, image) {
+    return this.updateGroupProfile(groupId, { image });
+  }
+
+  updateGroupProfile(groupId, changes) {
+    const previous = this.profileUpdates.get(groupId) || Promise.resolve();
+    const pending = previous.catch(() => {}).then(async () => {
+      const groups = await this.listGroups();
+      const group = groups.find(item => Number(item?.groupId) === Number(groupId));
+      if (!group?.groupProfile) throw new Error(`SimpleX group #${groupId} not found`);
+      const profile = { ...group.groupProfile, ...changes };
+      return this.sendCommand(`/_group_profile #${Number(groupId)} ${JSON.stringify(profile)}`);
+    }).finally(() => { if (this.profileUpdates.get(groupId) === pending) this.profileUpdates.delete(groupId); });
+    this.profileUpdates.set(groupId, pending);
+    return pending;
   }
 
   #connect() {

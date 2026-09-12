@@ -31,6 +31,9 @@ const whatsapp = webMode
     }
   })
   : new WhatsAppClient({ ...config.whatsapp, logger });
+const avatarSync = config.whatsapp.avatarsEnabled
+  ? new (await import('./avatars.js')).AvatarSync({ store, whatsapp, simplex, logger, intervalMs: config.whatsapp.avatarIntervalMs })
+  : null;
 router = config.simplex.controlTarget ? new BridgeRouter({
   simplex,
   whatsapp,
@@ -61,6 +64,7 @@ app.get('/health', (_req, res) => {
     simplexConnected: simplex.ws?.readyState === 1,
     whatsappProvider: config.whatsapp.provider,
     whatsappGroupsEnabled: config.whatsapp.groupsEnabled,
+    whatsappAvatarsEnabled: config.whatsapp.avatarsEnabled,
     whatsappStatus: webMode ? whatsapp.status : 'cloud_configured',
     routingConfigured: Boolean(router),
     mediaBridge: config.media.enabled,
@@ -121,6 +125,7 @@ if (webMode) {
     logger.error('WhatsApp startup failed', { error: error.message });
     shutdown('startup_failure');
   });
+  avatarSync?.start();
 }
 
 let shuttingDown = false;
@@ -130,6 +135,7 @@ async function shutdown(signal) {
   logger.info('Shutting down', { signal });
   const deadline = setTimeout(() => process.exit(1), 5000);
   deadline.unref();
+  await avatarSync?.stop();
   if (webMode) await whatsapp.stop().catch(() => {});
   simplex.stop();
   store.close();

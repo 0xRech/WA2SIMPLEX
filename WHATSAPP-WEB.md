@@ -94,3 +94,28 @@ destinations, legacy metadata recovery and persistence. Deployment reconnects bo
 services successfully. A real group message/media roundtrip still needs operator testing.
 Before rolling back to a version without group support, restore the matching pre-upgrade
 database snapshot as well; older code does not understand group route keys.
+
+
+## Automatic chat images
+
+`WHATSAPP_AVATARS_ENABLED=true` (web mode, default) copies visible WhatsApp contact
+profile pictures and WhatsApp group pictures into their mapped SimpleX group profiles.
+`WHATSAPP_AVATAR_REFRESH_HOURS=6` controls the refresh interval. A background worker
+checks for new mappings every 15 seconds, processes at most 10 per batch sequentially,
+and keeps picture requests separate from message routing.
+
+Downloads have timeouts and a 2 MiB limit. Images are converted to 96x96 JPEGs with
+metadata removed and a bounded SimpleX data URI. Unchanged image hashes are skipped.
+SQLite records only sync timestamps, destination group IDs and hashes, not picture URLs
+or original files. The resulting thumbnail is stored in the SimpleX group profile.
+Repairs that replace a mapped group cause the image to be applied again. Concurrent
+name and picture updates preserve the remaining group profile fields.
+
+If WhatsApp reports no accessible picture, a previously synchronized picture is removed.
+Transient errors retain the current picture and retry after 15 minutes. Access remains
+subject to the linked account's WhatsApp privacy permissions. WhatsApp group members
+do not become separate SimpleX identities with individual avatars.
+
+33 tests pass, including image encoding, change/removal behavior, retry handling,
+repaired mappings and concurrent profile edits. A real contact profile picture was
+successfully synchronized to its SimpleX group on the Rechgroup server.

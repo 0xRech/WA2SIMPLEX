@@ -32,6 +32,14 @@ export class BridgeStore {
 
       CREATE INDEX IF NOT EXISTS idx_processed_messages_seen_at
         ON processed_messages(seen_at);
+
+      CREATE TABLE IF NOT EXISTS avatar_sync (
+        chat_id TEXT PRIMARY KEY REFERENCES contacts(phone) ON DELETE CASCADE,
+        group_id INTEGER NOT NULL,
+        image_hash TEXT NOT NULL,
+        checked_at INTEGER NOT NULL,
+        retry_at INTEGER NOT NULL DEFAULT 0
+      );
     `);
   }
 
@@ -140,6 +148,28 @@ export class BridgeStore {
 
   close() {
     if (this.db?.isOpen) this.db.close();
+  }
+
+  listAvatarsDue(now, intervalMs, limit = 10) {
+    return this.db.prepare(`SELECT c.* FROM contacts c LEFT JOIN avatar_sync a ON a.chat_id=c.phone
+      WHERE c.simplex_group_id IS NOT NULL AND COALESCE(a.retry_at, 0) <= ?
+      AND (a.chat_id IS NULL OR a.checked_at <= ? OR a.group_id != c.simplex_group_id)
+      ORDER BY COALESCE(a.checked_at, 0), c.phone LIMIT ?`).all(now, now - intervalMs, limit).map(mapContact);
+  }
+
+  getAvatarState(chatId) {
+    const row = this.db.prepare('SELECT * FROM avatar_sync WHERE chat_id=?').get(chatId);
+    return row ? { groupId: Number(row.group_id), hash: row.image_hash, checkedAt: Number(row.checked_at) } : null;
+  }
+
+  setAvatarState(chatId, groupId, hash, checkedAt) {
+    this.db.prepare('INSERT OR REPLACE INTO avatar_sync(chat_id,group_id,image_hash,checked_at) VALUES(?,?,?,?)')
+      .run(chatId, groupId, hash, checkedAt);
+  }
+
+  deferAvatar(chatId, groupId, hash, retryAt) {
+    this.db.prepare('INSERT OR REPLACE INTO avatar_sync(chat_id,group_id,image_hash,checked_at,retry_at) VALUES(?,?,?,0,?)')
+      .run(chatId, groupId, hash, retryAt);
   }
 }
 
