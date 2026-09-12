@@ -7,21 +7,34 @@ export function phoneFromJid(jid) {
 export async function normalizeWebMessage(raw, resolveLid = async () => null) {
   const key = raw?.key;
   const jid = key?.remoteJid || '';
-  if (!key?.id || key.fromMe || (!jid.endsWith('@s.whatsapp.net') && !jid.endsWith('@lid'))) return null;
-  let from = phoneFromJid(jid);
-  if (!from && jid.endsWith('@lid')) from = phoneFromJid(key.remoteJidAlt) || phoneFromJid(await resolveLid(jid));
-  if (!from) return null; // Never interpret a LID as a telephone number.
+  const groupJid = jid.endsWith('@g.us') ? jid : null;
+  if (!key?.id || key.fromMe || (!groupJid && !jid.endsWith('@s.whatsapp.net') && !jid.endsWith('@lid'))) return null;
+
+  const senderJid = groupJid ? (key.participant || key.participantAlt || '') : jid;
+  const senderAlt = groupJid ? (key.participantAlt || '') : (key.remoteJidAlt || '');
+  let from = phoneFromJid(senderJid) || phoneFromJid(senderAlt);
+  if (!from && senderJid.endsWith('@lid')) from = phoneFromJid(await resolveLid(senderJid));
+  if (!from && senderAlt.endsWith('@lid')) from = phoneFromJid(await resolveLid(senderAlt));
+  if (!from) return null;
+
   let body = raw.message;
   for (let i = 0; i < 5; i++) {
-    // View-once media is deliberately not copied to a persistent bridge.
     if (body?.viewOnceMessage || body?.viewOnceMessageV2 || body?.viewOnceMessageV2Extension) return null;
     const inner = body?.ephemeralMessage?.message || body?.documentWithCaptionMessage?.message;
     if (!inner) break;
     body = inner;
   }
   if (!body) return null;
-  const id = `web:${from}:${key.id}`;
-  const base = { id, from, name: raw.pushName || from, timestamp: String(raw.messageTimestamp || ''), raw };
+  const id = groupJid ? `web:${groupJid}:${from}:${key.id}` : `web:${from}:${key.id}`;
+  const base = {
+    id,
+    from,
+    name: raw.pushName || from,
+    timestamp: String(raw.messageTimestamp || ''),
+    groupJid,
+    chatType: groupJid ? 'group' : 'direct',
+    raw
+  };
   const text = body.conversation ?? body.extendedTextMessage?.text;
   if (typeof text === 'string' && text) return { ...base, type: 'text', text, media: null };
   for (const kind of MEDIA) {
@@ -37,7 +50,7 @@ export async function normalizeWebMessage(raw, resolveLid = async () => null) {
     const l = body.locationMessage;
     return { ...base, type: 'location', text: `📍 ${l.name || 'Location'} (${l.degreesLatitude}, ${l.degreesLongitude})`, media: null };
   }
-  return null; // Ignore receipts, protocol messages, reactions and unsupported events.
+  return null;
 }
 
 export async function readBoundedStream(stream, maxBytes) {

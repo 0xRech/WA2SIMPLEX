@@ -4,6 +4,7 @@ import { createLogger } from './logger.js';
 import { SimplexClient } from './simplex.js';
 import { WhatsAppClient, extractWhatsAppMessages, verifyMetaSignature } from './whatsapp.js';
 import { BridgeRouter } from './router.js';
+import { GroupBridgeRouter } from './group-bridge.js';
 import { BridgeStore } from './storage.js';
 
 process.umask(0o077);
@@ -22,15 +23,23 @@ app.use(express.json({
 const simplex = new SimplexClient({ url: config.simplex.wsUrl, logger });
 const webMode = config.whatsapp.provider === 'web';
 let router;
+let groupRouter;
 const whatsapp = webMode
   ? new (await import('./whatsapp-web.js')).WhatsAppWebClient({
     ...config.whatsapp, logger, maxBytes: config.media.maxBytes,
     onMessage: async message => {
-      if (!router) return;
-      await router.handleWhatsApp(message);
+      if (message.groupJid) {
+        if (!groupRouter) {
+          logger.debug('Ignoring WhatsApp group because no group bridge is configured', { whatsappGroupJid: message.groupJid });
+          return;
+        }
+        if (await groupRouter.handleWhatsApp(message)) return;
+      }
+      if (router) await router.handleWhatsApp(message);
     }
   })
   : new WhatsAppClient({ ...config.whatsapp, logger });
+
 router = config.simplex.controlTarget ? new BridgeRouter({
   simplex,
   whatsapp,
@@ -46,9 +55,23 @@ router = config.simplex.controlTarget ? new BridgeRouter({
   logger
 }) : null;
 
+groupRouter = webMode && config.groupBridges.length ? new GroupBridgeRouter({
+  simplex,
+  whatsapp,
+  store,
+  bridges: config.groupBridges,
+  markWhatsAppRead: config.whatsapp.markRead,
+  mediaEnabled: config.media.enabled,
+  mediaDir: config.media.dir,
+  maxMediaBytes: config.media.maxBytes,
+  logger
+}) : null;
+
 simplex.on('event', (event) => {
-  if (!router) return;
-  router.handleSimplexEvent(event).catch((error) => {
+  (async () => {
+    const handledByGroup = groupRouter ? await groupRouter.handleSimplexEvent(event) : false;
+    if (!handledByGroup && router) await router.handleSimplexEvent(event);
+  })().catch((error) => {
     logger.error('SimpleX event handling failed', { error: error.message });
   });
 });
@@ -57,11 +80,12 @@ app.get('/health', (_req, res) => {
   res.json({
     ok: true,
     service: 'WA2SimpleX',
-    version: '0.3.0-alpha.1',
+    version: '0.3.0-alpha.1+group-bridge',
     simplexConnected: simplex.ws?.readyState === 1,
     whatsappProvider: config.whatsapp.provider,
     whatsappStatus: webMode ? whatsapp.status : 'cloud_configured',
-    routingConfigured: Boolean(router),
+    routingConfigured: Boolean(router || groupRouter),
+    groupBridges: groupRouter?.size || 0,
     mediaBridge: config.media.enabled,
     mediaMaxBytes: config.media.maxBytes,
     contacts: store.stats(),
@@ -92,7 +116,7 @@ app.post('/webhook', (req, res) => {
 
   res.sendStatus(200);
   const messages = extractWhatsAppMessages(req.body);
-  Promise.allSettled(messages.map((message) => router.handleWhatsApp(message))).then((results) => {
+  Promise.allSettled(messages.map((message) => router?.handleWhatsApp(message))).then((results) => {
     for (const result of results) {
       if (result.status === 'rejected') {
         logger.error('WhatsApp webhook processing failed', { error: result.reason?.message || String(result.reason) });
@@ -107,7 +131,11 @@ app.use((error, _req, res, _next) => {
 });
 
 const server = app.listen(config.port, '0.0.0.0', () => {
-  logger.info('WA2SimpleX HTTP server listening', { port: config.port, mediaBridge: config.media.enabled });
+  logger.info('WA2SimpleX HTTP server listening', {
+    port: config.port,
+    mediaBridge: config.media.enabled,
+    groupBridges: groupRouter?.size || 0
+  });
 });
 
 simplex.start()
@@ -115,7 +143,7 @@ simplex.start()
   .catch((error) => logger.error('Initial SimpleX connection failed', { error: error.message }));
 
 if (webMode) {
-  if (!router) logger.warn('Pairing only: configure SIMPLEX_CONTROL_TARGET before forwarding messages');
+  if (!router && !groupRouter) logger.warn('Pairing only: configure SIMPLEX_CONTROL_TARGET or WA2SIMPLEX_GROUP_BRIDGES before forwarding messages');
   whatsapp.start().catch(error => {
     logger.error('WhatsApp startup failed', { error: error.message });
     shutdown('startup_failure');
