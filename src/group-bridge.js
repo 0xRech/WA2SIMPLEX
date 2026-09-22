@@ -318,6 +318,12 @@ export class GroupBridgeRouter {
     if (/^\d+$/.test(value)) return pending[Number(value) - 1] || null;
     const byJid = pending.find(group => group.whatsappJid === value);
     if (byJid) return byJid;
+    if (GROUP_JID_RE.test(value)) {
+      return this.store.getDiscoveredGroup?.(value) || {
+        whatsappJid: value,
+        displayName: `WhatsApp-Gruppe ${shortGroupId(value)}`
+      };
+    }
     const lower = value.toLowerCase();
     const exact = pending.filter(group => group.displayName.toLowerCase() === lower);
     return exact.length === 1 ? exact[0] : null;
