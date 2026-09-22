@@ -24,3 +24,37 @@ test('stores persistent contact routing metadata and deduplicates webhook ids', 
     store.close();
   }
 });
+
+test('stores discovered WhatsApp groups and persistent group bridge mappings', () => {
+  const store = new BridgeStore(':memory:');
+  try {
+    const observed = store.observeWhatsAppGroup('120363999999999@g.us', 'Projektgruppe');
+    assert.equal(observed.isNew, true);
+    assert.equal(observed.group.displayName, 'Projektgruppe');
+
+    const seenAgain = store.observeWhatsAppGroup('120363999999999@g.us', 'Projektgruppe Neu');
+    assert.equal(seenAgain.isNew, false);
+    assert.equal(seenAgain.group.displayName, 'Projektgruppe Neu');
+
+    assert.equal(store.listPendingGroups().length, 1);
+    store.markDiscoveredGroupAnnounced('120363999999999@g.us');
+    assert.ok(store.getDiscoveredGroup('120363999999999@g.us').announcedAt);
+
+    store.upsertGroupBridge({
+      whatsappJid: '120363999999999@g.us',
+      simplexGroupId: 77,
+      name: 'Projektgruppe Neu'
+    });
+
+    assert.equal(store.listPendingGroups().length, 0);
+    assert.equal(store.getGroupBridgeBySimplex(77).whatsappJid, '120363999999999@g.us');
+
+    store.setGroupBridgeEnabled('120363999999999@g.us', false);
+    assert.equal(store.getGroupBridgeByWhatsApp('120363999999999@g.us').enabled, false);
+
+    assert.equal(store.deleteGroupBridgeByWhatsApp('120363999999999@g.us'), true);
+    assert.equal(store.listPendingGroups().length, 1);
+  } finally {
+    store.close();
+  }
+});

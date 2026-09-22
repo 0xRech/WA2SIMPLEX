@@ -288,6 +288,50 @@ Files intentionally do **not** route from the Control chat. Send an attachment f
 
 Messages beginning with `/` are local WA2SimpleX commands and are not forwarded to WhatsApp.
 
+## WhatsApp group bridge
+
+In linked-device mode (`WHATSAPP_PROVIDER=web`), WA2SimpleX now remembers previously unseen WhatsApp groups and lets you bind them from SimpleX without editing the server configuration.
+
+When a message arrives from an unknown WhatsApp group, the Control chat receives a discovery notice. You can then use:
+
+```text
+/bridge pending
+/bridge groups
+```
+
+To connect a WhatsApp group, open the SimpleX group that should act as its counterpart and send:
+
+```text
+/bridge bind 1
+```
+
+The number refers to the entry shown by `/bridge pending`. A WhatsApp group JID also works directly:
+
+```text
+/bridge bind 120363123456789@g.us
+```
+
+Group mappings are persisted in SQLite and survive restarts. Existing static `WA2SIMPLEX_GROUP_BRIDGES` entries are imported on startup.
+
+Available group commands:
+
+```text
+/bridge pending
+/bridge groups
+/bridge bind <number|group-jid>
+/bridge status
+/bridge pause
+/bridge resume
+/bridge unbind
+/bridge help
+```
+
+From the Control chat, an explicit SimpleX group can be targeted with:
+
+```text
+/bridge bind <number|group-jid> #<simplex-group-id>
+```
+
 ## Media configuration
 
 `MEDIA_MAX_MB` is a WA2SimpleX safety ceiling, not a promise that every WhatsApp media type accepts that exact size. Meta can enforce additional per-type format and size limits.
