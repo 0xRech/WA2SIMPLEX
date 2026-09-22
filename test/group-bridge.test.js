@@ -214,6 +214,18 @@ test('binds a discovered WhatsApp group from the target SimpleX group and persis
   }
 });
 
+test('binds a known WhatsApp group JID directly without prior discovery', async () => {
+  const ctx = setup({ withInitialBridge: false });
+  try {
+    await ctx.router.handleSimplexEvent(simplexText('/bridge bind 120363888888888@g.us', 88));
+    const stored = ctx.store.getGroupBridgeBySimplex(88);
+    assert.equal(stored.whatsappJid, '120363888888888@g.us');
+    assert.match(stored.name, /WhatsApp-Gruppe/);
+  } finally {
+    ctx.close();
+  }
+});
+
 test('lists pending groups and supports binding from the control chat', async () => {
   const ctx = setup({ withInitialBridge: false });
   try {
