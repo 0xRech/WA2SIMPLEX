@@ -32,6 +32,28 @@ export class BridgeStore {
 
       CREATE INDEX IF NOT EXISTS idx_processed_messages_seen_at
         ON processed_messages(seen_at);
+
+      CREATE TABLE IF NOT EXISTS discovered_groups (
+        whatsapp_jid TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        first_seen_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        announced_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS group_bridges (
+        whatsapp_jid TEXT PRIMARY KEY,
+        simplex_group_id INTEGER NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        whatsapp_to_simplex INTEGER NOT NULL DEFAULT 1,
+        simplex_to_whatsapp INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_discovered_groups_last_seen_at
+        ON discovered_groups(last_seen_at);
     `);
   }
 
@@ -119,6 +141,104 @@ export class BridgeStore {
     `).all(Math.max(1, Math.min(Number(limit) || 100, 500))).map(mapContact);
   }
 
+  observeWhatsAppGroup(whatsappJid, displayName) {
+    const jid = String(whatsappJid || '').trim();
+    const existing = this.getDiscoveredGroup(jid);
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO discovered_groups(whatsapp_jid, display_name, first_seen_at, last_seen_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(whatsapp_jid) DO UPDATE SET
+        display_name = excluded.display_name,
+        last_seen_at = excluded.last_seen_at
+    `).run(jid, cleanName(displayName, jid), now, now);
+    return { group: this.getDiscoveredGroup(jid), isNew: !existing };
+  }
+
+  getDiscoveredGroup(whatsappJid) {
+    return mapDiscoveredGroup(this.db.prepare(
+      'SELECT * FROM discovered_groups WHERE whatsapp_jid = ?'
+    ).get(String(whatsappJid || '').trim()));
+  }
+
+  markDiscoveredGroupAnnounced(whatsappJid) {
+    this.db.prepare('UPDATE discovered_groups SET announced_at = ? WHERE whatsapp_jid = ?')
+      .run(new Date().toISOString(), String(whatsappJid || '').trim());
+    return this.getDiscoveredGroup(whatsappJid);
+  }
+
+  listPendingGroups(limit = 50) {
+    return this.db.prepare(`
+      SELECT d.*
+      FROM discovered_groups d
+      LEFT JOIN group_bridges b ON b.whatsapp_jid = d.whatsapp_jid
+      WHERE b.whatsapp_jid IS NULL
+      ORDER BY d.last_seen_at DESC
+      LIMIT ?
+    `).all(Math.max(1, Math.min(Number(limit) || 50, 200))).map(mapDiscoveredGroup);
+  }
+
+  upsertGroupBridge(bridge) {
+    const now = new Date().toISOString();
+    const whatsappJid = String(bridge?.whatsappJid || '').trim();
+    const simplexGroupId = Number(bridge?.simplexGroupId);
+    const name = cleanName(bridge?.name, whatsappJid);
+    this.db.prepare(`
+      INSERT INTO group_bridges(
+        whatsapp_jid, simplex_group_id, name, enabled,
+        whatsapp_to_simplex, simplex_to_whatsapp, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(whatsapp_jid) DO UPDATE SET
+        simplex_group_id = excluded.simplex_group_id,
+        name = excluded.name,
+        enabled = excluded.enabled,
+        whatsapp_to_simplex = excluded.whatsapp_to_simplex,
+        simplex_to_whatsapp = excluded.simplex_to_whatsapp,
+        updated_at = excluded.updated_at
+    `).run(
+      whatsappJid,
+      simplexGroupId,
+      name,
+      bridge?.enabled === false ? 0 : 1,
+      bridge?.whatsappToSimplex === false ? 0 : 1,
+      bridge?.simplexToWhatsapp === false ? 0 : 1,
+      now,
+      now
+    );
+    return this.getGroupBridgeByWhatsApp(whatsappJid);
+  }
+
+  getGroupBridgeByWhatsApp(whatsappJid) {
+    return mapGroupBridge(this.db.prepare(
+      'SELECT * FROM group_bridges WHERE whatsapp_jid = ?'
+    ).get(String(whatsappJid || '').trim()));
+  }
+
+  getGroupBridgeBySimplex(groupId) {
+    return mapGroupBridge(this.db.prepare(
+      'SELECT * FROM group_bridges WHERE simplex_group_id = ?'
+    ).get(Number(groupId)));
+  }
+
+  listGroupBridges() {
+    return this.db.prepare(
+      'SELECT * FROM group_bridges ORDER BY name COLLATE NOCASE, simplex_group_id'
+    ).all().map(mapGroupBridge);
+  }
+
+  setGroupBridgeEnabled(whatsappJid, enabled) {
+    this.db.prepare(
+      'UPDATE group_bridges SET enabled = ?, updated_at = ? WHERE whatsapp_jid = ?'
+    ).run(enabled ? 1 : 0, new Date().toISOString(), String(whatsappJid || '').trim());
+    return this.getGroupBridgeByWhatsApp(whatsappJid);
+  }
+
+  deleteGroupBridgeByWhatsApp(whatsappJid) {
+    return this.db.prepare('DELETE FROM group_bridges WHERE whatsapp_jid = ?')
+      .run(String(whatsappJid || '').trim()).changes > 0;
+  }
+
   stats() {
     const row = this.db.prepare(`
       SELECT
@@ -152,6 +272,31 @@ function mapContact(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastSeenAt: row.last_seen_at
+  };
+}
+
+function mapDiscoveredGroup(row) {
+  if (!row) return null;
+  return {
+    whatsappJid: row.whatsapp_jid,
+    displayName: row.display_name,
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at,
+    announcedAt: row.announced_at
+  };
+}
+
+function mapGroupBridge(row) {
+  if (!row) return null;
+  return {
+    whatsappJid: row.whatsapp_jid,
+    simplexGroupId: Number(row.simplex_group_id),
+    name: row.name,
+    enabled: Boolean(row.enabled),
+    whatsappToSimplex: Boolean(row.whatsapp_to_simplex),
+    simplexToWhatsapp: Boolean(row.simplex_to_whatsapp),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
   };
 }
 
