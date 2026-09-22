@@ -113,7 +113,7 @@ export class GroupBridgeRouter {
       const chatRef = chatRefFromInfo(item.chatInfo);
       const text = messageContentText(chatItem.content.msgContent)?.trim() || '';
 
-      if (/^\\/bridge(?:\\s|$)/i.test(text)) {
+      if (text.toLowerCase() === '/bridge' || text.toLowerCase().startsWith('/bridge ')) {
         const commandHandled = await this.#handleBridgeCommand({ text, chatRef, groupId });
         if (commandHandled) handled = true;
         continue;
