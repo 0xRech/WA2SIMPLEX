@@ -22,18 +22,38 @@ app.use(express.json({
 
 const simplex = new SimplexClient({ url: config.simplex.wsUrl, logger });
 const webMode = config.whatsapp.provider === 'web';
+
+if (webMode) {
+  for (const bridge of config.groupBridges) {
+    const byWhatsApp = store.getGroupBridgeByWhatsApp(bridge.whatsappJid);
+    const bySimplex = store.getGroupBridgeBySimplex(bridge.simplexGroupId);
+    if (!byWhatsApp && !bySimplex) {
+      store.upsertGroupBridge(bridge);
+      continue;
+    }
+    if (byWhatsApp?.simplexGroupId === bridge.simplexGroupId) {
+      store.upsertGroupBridge({ ...byWhatsApp, ...bridge });
+      continue;
+    }
+    logger.warn('Skipping conflicting WA2SIMPLEX_GROUP_BRIDGES entry because a persistent mapping already exists', {
+      whatsappGroupJid: bridge.whatsappJid,
+      simplexGroupId: bridge.simplexGroupId
+    });
+  }
+}
+
 let router;
 let groupRouter;
 const whatsapp = webMode
   ? new (await import('./whatsapp-web.js')).WhatsAppWebClient({
-    ...config.whatsapp, logger, maxBytes: config.media.maxBytes,
+    ...config.whatsapp,
+    logger,
+    maxBytes: config.media.maxBytes,
     onMessage: async message => {
       if (message.groupJid) {
-        if (!groupRouter) {
-          logger.debug('Ignoring WhatsApp group because no group bridge is configured', { whatsappGroupJid: message.groupJid });
-          return;
-        }
-        if (await groupRouter.handleWhatsApp(message)) return;
+        if (groupRouter && await groupRouter.handleWhatsApp(message)) return;
+        logger.debug('Ignoring WhatsApp group because group routing is unavailable', { whatsappGroupJid: message.groupJid });
+        return;
       }
       if (router) await router.handleWhatsApp(message);
     }
@@ -55,11 +75,12 @@ router = config.simplex.controlTarget ? new BridgeRouter({
   logger
 }) : null;
 
-groupRouter = webMode && config.groupBridges.length ? new GroupBridgeRouter({
+groupRouter = webMode ? new GroupBridgeRouter({
   simplex,
   whatsapp,
   store,
-  bridges: config.groupBridges,
+  bridges: store.listGroupBridges(),
+  controlTarget: config.simplex.controlTarget,
   markWhatsAppRead: config.whatsapp.markRead,
   mediaEnabled: config.media.enabled,
   mediaDir: config.media.dir,
@@ -80,12 +101,14 @@ app.get('/health', (_req, res) => {
   res.json({
     ok: true,
     service: 'WA2SimpleX',
-    version: '0.3.0-alpha.1+group-bridge',
+    version: '0.3.0-alpha.1+group-discovery',
     simplexConnected: simplex.ws?.readyState === 1,
     whatsappProvider: config.whatsapp.provider,
     whatsappStatus: webMode ? whatsapp.status : 'cloud_configured',
-    routingConfigured: Boolean(router || groupRouter),
+    routingConfigured: Boolean(router || groupRouter?.size),
+    groupDiscovery: Boolean(webMode && config.simplex.controlTarget),
     groupBridges: groupRouter?.size || 0,
+    pendingGroups: store.listPendingGroups().length,
     mediaBridge: config.media.enabled,
     mediaMaxBytes: config.media.maxBytes,
     contacts: store.stats(),
@@ -143,7 +166,9 @@ simplex.start()
   .catch((error) => logger.error('Initial SimpleX connection failed', { error: error.message }));
 
 if (webMode) {
-  if (!router && !groupRouter) logger.warn('Pairing only: configure SIMPLEX_CONTROL_TARGET or WA2SIMPLEX_GROUP_BRIDGES before forwarding messages');
+  if (!router && !config.simplex.controlTarget && !groupRouter?.size) {
+    logger.warn('Pairing only: configure SIMPLEX_CONTROL_TARGET or WA2SIMPLEX_GROUP_BRIDGES before forwarding messages');
+  }
   whatsapp.start().catch(error => {
     logger.error('WhatsApp startup failed', { error: error.message });
     shutdown('startup_failure');
